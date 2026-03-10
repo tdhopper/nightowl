@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import plistlib
+import os
 import random
 import re
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 PLIST_DIR = Path.home() / "Library" / "LaunchAgents"
@@ -40,13 +43,20 @@ def generate_plist(project_dir: Path, window_start: str, window_end: str) -> dic
     hour = random.choice(hours)
     minute = random.randint(0, 59)
 
-    # Find the nightowl command
-    nightowl_bin = "nightowl"
+    # Resolve full path so launchd can find the binary (its PATH is minimal)
+    nightowl_bin = shutil.which("nightowl") or str(Path(sys.prefix) / "bin" / "nightowl")
+
+    # Capture current PATH so launchd subprocesses (git, claude, gh) are findable
+    path = os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
 
     plist = {
         "Label": label,
         "ProgramArguments": [nightowl_bin, "run"],
         "WorkingDirectory": str(project_dir),
+        "EnvironmentVariables": {
+            "PATH": path,
+            "HOME": str(Path.home()),
+        },
         "StartCalendarInterval": {"Hour": hour, "Minute": minute},
         "StandardOutPath": str(
             Path.home() / ".local" / "share" / "nightowl" / "logs" / f"{slug}-stdout.log"
