@@ -6,7 +6,7 @@ from pathlib import Path
 
 import click
 
-from nightowl.config import load_config
+from nightowl.config import WEEKDAY_DISPLAY, load_config
 from nightowl.logging import setup_logging
 from nightowl.runner import run_task
 from nightowl.state import (
@@ -44,6 +44,13 @@ def run(task_id: str | None, dry_run: bool):
             sys.exit(1)
         tasks_to_run = [task]
     else:
+        today = datetime.now().weekday()
+        if today in config.skip_weekdays:
+            logger.info(
+                f"Today is {WEEKDAY_DISPLAY[today]}, which is in skip_weekdays. "
+                f"Skipping this run."
+            )
+            return
         tasks_to_run = [
             t for t in config.tasks
             if is_task_eligible(project_path, t.id, t.interval)
