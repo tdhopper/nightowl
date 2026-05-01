@@ -206,7 +206,10 @@ def _run_fact_check_loop(
 def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
     """Execute a single task. Returns a dict with result info."""
     date_str = datetime.now().strftime("%Y%m%d")
-    branch = f"nightowl/{task.id}-{date_str}"
+    # Date before task.id so that hosts that truncate branch slugs (e.g.
+    # Cloudflare Pages preview aliases cut at 28 chars) keep the date in
+    # the slug and don't collide across daily runs of the same task.
+    branch = f"nightowl/{date_str}-{task.id}"
 
     logger.info(f"--- Task: {task.name} ({task.id}) ---")
     logger.info(f"Branch: {branch}")
