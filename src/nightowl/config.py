@@ -78,6 +78,9 @@ class Task:
         self.fact_check = fact_check
 
 
+CADENCES = ("daily", "hourly")
+
+
 class Config:
     def __init__(
         self,
@@ -85,11 +88,17 @@ class Config:
         window_end: str,
         tasks: list[Task],
         skip_weekdays: list[int] | None = None,
+        cadence: str = "daily",
     ):
         self.window_start = window_start
         self.window_end = window_end
         self.tasks = tasks
         self.skip_weekdays = skip_weekdays or []
+        if cadence not in CADENCES:
+            raise ValueError(
+                f"Invalid cadence: {cadence!r}. Must be one of: {', '.join(CADENCES)}."
+            )
+        self.cadence = cadence
 
     def get_task(self, task_id: str) -> Task | None:
         for t in self.tasks:
@@ -107,10 +116,16 @@ def _load_schedule(path: Path) -> dict:
     if not isinstance(raw_skip, list):
         raise ValueError(f"{path.name}: 'skip_weekdays' must be a list.")
     skip_weekdays = [parse_weekday(d) for d in raw_skip]
+    cadence = fm.get("cadence", "daily")
+    if cadence not in CADENCES:
+        raise ValueError(
+            f"{path.name}: 'cadence' must be one of: {', '.join(CADENCES)}."
+        )
     return {
         "window_start": fm["window_start"],
         "window_end": fm["window_end"],
         "skip_weekdays": skip_weekdays,
+        "cadence": cadence,
     }
 
 
@@ -169,4 +184,5 @@ def load_config(path: Path | None = None) -> Config:
         window_end=schedule["window_end"],
         tasks=tasks,
         skip_weekdays=schedule["skip_weekdays"],
+        cadence=schedule["cadence"],
     )

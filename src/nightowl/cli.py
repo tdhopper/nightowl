@@ -129,8 +129,13 @@ def install():
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
-    plist_path = scheduler_install(Path.cwd(), config.window_start, config.window_end)
-    click.echo(f"Installed: {plist_path}")
+    plist_path = scheduler_install(
+        Path.cwd(),
+        config.window_start,
+        config.window_end,
+        cadence=config.cadence,
+    )
+    click.echo(f"Installed: {plist_path} (cadence: {config.cadence})")
 
 
 @main.command()

@@ -278,6 +278,44 @@ class TestLoadConfig:
         config = load_config(nightowl_dir)
         assert config.skip_weekdays == [6]
 
+    def test_cadence_default_daily(self, tmp_path):
+        nightowl_dir = _make_project(
+            tmp_path,
+            {"t.md": "---\nname: T\ninterval: 24h\n---\nDo it\n"},
+        )
+        config = load_config(nightowl_dir)
+        assert config.cadence == "daily"
+
+    def test_cadence_hourly(self, tmp_path):
+        nightowl_dir = _make_project(
+            tmp_path,
+            {"t.md": "---\nname: T\ninterval: 24h\n---\nDo it\n"},
+            schedule=(
+                "---\n"
+                'window_start: "22:00"\n'
+                'window_end: "06:00"\n'
+                "cadence: hourly\n"
+                "---\n"
+            ),
+        )
+        config = load_config(nightowl_dir)
+        assert config.cadence == "hourly"
+
+    def test_cadence_invalid(self, tmp_path):
+        nightowl_dir = _make_project(
+            tmp_path,
+            {"t.md": "---\nname: T\ninterval: 24h\n---\nDo it\n"},
+            schedule=(
+                "---\n"
+                'window_start: "22:00"\n'
+                'window_end: "06:00"\n'
+                "cadence: weekly\n"
+                "---\n"
+            ),
+        )
+        with pytest.raises(ValueError, match="cadence"):
+            load_config(nightowl_dir)
+
     def test_skip_weekdays_invalid(self, tmp_path):
         nightowl_dir = _make_project(
             tmp_path,
