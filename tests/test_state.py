@@ -33,9 +33,19 @@ class TestState:
     def test_is_eligible_no_state(self):
         assert state.is_task_eligible("/proj", "task1", timedelta(hours=24))
 
-    def test_is_eligible_after_failure(self):
+    def test_is_not_eligible_after_recent_failure(self):
+        # Failures use the same interval as successes — otherwise hourly
+        # cadence retries every failed task on every fire.
         state.record_task_result("/proj", "task1", "failure", error="err")
-        assert state.is_task_eligible("/proj", "task1", timedelta(hours=24))
+        assert not state.is_task_eligible("/proj", "task1", timedelta(hours=24))
+
+    def test_is_eligible_after_failure_interval_elapsed(self):
+        state.record_task_result("/proj", "task1", "failure", error="err")
+        future = datetime.now() + timedelta(hours=25)
+        with patch("nightowl.state.datetime") as mock_dt:
+            mock_dt.now.return_value = future
+            mock_dt.fromisoformat = datetime.fromisoformat
+            assert state.is_task_eligible("/proj", "task1", timedelta(hours=24))
 
     def test_is_eligible_interval_elapsed(self):
         state.record_task_result("/proj", "task1", "success")

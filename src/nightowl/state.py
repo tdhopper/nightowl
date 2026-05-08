@@ -47,11 +47,16 @@ def record_task_result(
 
 
 def is_task_eligible(project_path: str, task_id: str, interval: timedelta) -> bool:
-    """Check if enough time has elapsed since the last successful run."""
+    """Check if enough time has elapsed since the last run.
+
+    The same interval applies whether the previous run succeeded or failed —
+    otherwise a failed task retries on every launchd fire, which storms the
+    queue under hourly cadence. Failed runs surface in ``nightowl status``;
+    use ``nightowl run --task <id>`` to retry manually before the interval
+    elapses.
+    """
     task_state = get_task_state(project_path, task_id)
     if task_state is None:
-        return True
-    if task_state.get("result") != "success":
         return True
     last_run = datetime.fromisoformat(task_state["last_run"])
     return datetime.now() - last_run >= interval
