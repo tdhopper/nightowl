@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+import shutil
 import subprocess
 import tempfile
 from datetime import datetime
@@ -8,6 +10,15 @@ from logging import Logger
 from pathlib import Path
 
 from nightowl.config import Task
+
+
+WORKTREE_ROOT = Path.home() / ".cache" / "nightowl" / "worktrees"
+
+
+def _worktree_path(project_dir: Path, task_id: str) -> Path:
+    """Path where the worktree for a given (project, task) is checked out."""
+    slug = re.sub(r"[^a-zA-Z0-9]", "-", project_dir.name).strip("-").lower()
+    return WORKTREE_ROOT / slug / task_id
 
 
 def _run(
@@ -203,16 +214,41 @@ def _run_fact_check_loop(
     logger.warning(f"Fact-check did not pass after {max_iterations} iterations, proceeding anyway")
 
 
+def _cleanup_worktree(
+    project_dir: Path, worktree_path: Path, branch: str, logger: Logger,
+) -> None:
+    """Remove the worktree directory and branch, tolerating partial state."""
+    _run(
+        ["git", "worktree", "remove", "--force", str(worktree_path)],
+        cwd=project_dir, logger=logger,
+    )
+    _run(["git", "worktree", "prune"], cwd=project_dir, logger=logger)
+    if worktree_path.exists():
+        # Worktree dir survived registration removal (e.g. it was orphaned).
+        try:
+            shutil.rmtree(worktree_path)
+        except OSError as e:
+            logger.warning(f"Could not remove worktree dir {worktree_path}: {e}")
+    _run(["git", "branch", "-D", branch], cwd=project_dir, logger=logger)
+
+
 def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
-    """Execute a single task. Returns a dict with result info."""
+    """Execute a single task. Returns a dict with result info.
+
+    Each run happens in a throwaway git worktree under WORKTREE_ROOT. The main
+    checkout in ``project_dir`` is never modified — so a nightowl run can't
+    clobber uncommitted edits a developer left in the project working tree.
+    """
     date_str = datetime.now().strftime("%Y%m%d")
     # Date before task.id so that hosts that truncate branch slugs (e.g.
     # Cloudflare Pages preview aliases cut at 28 chars) keep the date in
     # the slug and don't collide across daily runs of the same task.
     branch = f"nightowl/{date_str}-{task.id}"
+    worktree_path = _worktree_path(project_dir, task.id)
 
     logger.info(f"--- Task: {task.name} ({task.id}) ---")
     logger.info(f"Branch: {branch}")
+    logger.info(f"Worktree: {worktree_path}")
 
     try:
         # Fetch origin
@@ -220,22 +256,27 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
         if result.returncode != 0:
             raise RuntimeError(f"git fetch failed: {result.stderr}")
 
-        # Delete existing branch if present
-        _run(["git", "branch", "-D", branch], cwd=project_dir, logger=logger)
+        # Clean up any leftover state from a prior crashed run
+        _cleanup_worktree(project_dir, worktree_path, branch, logger)
+        worktree_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Create branch from origin/main
+        # Create the worktree on a fresh branch from origin/main
         result = _run(
-            ["git", "checkout", "-b", branch, "origin/main"],
-            cwd=project_dir,
-            logger=logger,
+            [
+                "git", "worktree", "add",
+                str(worktree_path),
+                "-b", branch,
+                "origin/main",
+            ],
+            cwd=project_dir, logger=logger,
         )
         if result.returncode != 0:
-            raise RuntimeError(f"git checkout failed: {result.stderr}")
+            raise RuntimeError(f"git worktree add failed: {result.stderr}")
 
         # Snapshot untracked files before claude runs
         pre_untracked = _run(
             ["git", "ls-files", "--others", "--exclude-standard"],
-            cwd=project_dir, logger=logger,
+            cwd=worktree_path, logger=logger,
         )
         pre_untracked_set = set(pre_untracked.stdout.strip().splitlines())
 
@@ -249,7 +290,7 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
             "--", task.prompt,
         ]
         claude_result = _run(
-            claude_cmd, cwd=project_dir, logger=logger, timeout=1800,
+            claude_cmd, cwd=worktree_path, logger=logger, timeout=1800,
         )
         logger.info(f"Claude exit code: {claude_result.returncode}")
 
@@ -257,19 +298,19 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
             raise RuntimeError(f"claude exited with code {claude_result.returncode}")
 
         if task.fact_check:
-            _run_fact_check_loop(task, project_dir, logger)
+            _run_fact_check_loop(task, worktree_path, logger)
 
         # Check if Claude already committed (branch ahead of origin/main)
         rev_list = _run(
             ["git", "rev-list", "--count", "origin/main..HEAD"],
-            cwd=project_dir, logger=logger,
+            cwd=worktree_path, logger=logger,
         )
         commits_ahead = int(rev_list.stdout.strip() or "0")
 
         # Find uncommitted working-tree changes (unstaged tracked files)
         wt_diff = _run(
             ["git", "diff", "--name-only"],
-            cwd=project_dir, logger=logger,
+            cwd=worktree_path, logger=logger,
         )
         uncommitted_files = [
             f for f in wt_diff.stdout.strip().splitlines() if f
@@ -277,7 +318,7 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
         # Find new untracked files claude created
         post_untracked = _run(
             ["git", "ls-files", "--others", "--exclude-standard"],
-            cwd=project_dir, logger=logger,
+            cwd=worktree_path, logger=logger,
         )
         new_files = [
             f for f in post_untracked.stdout.strip().splitlines()
@@ -292,10 +333,10 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
         if has_changes and task.output in ("pr", "commit"):
             # Only add/commit if there are uncommitted changes
             if uncommitted_files:
-                _run(["git", "add", "--"] + uncommitted_files, cwd=project_dir, logger=logger)
+                _run(["git", "add", "--"] + uncommitted_files, cwd=worktree_path, logger=logger)
                 result = _run(
                     ["git", "commit", "-m", task.name],
-                    cwd=project_dir,
+                    cwd=worktree_path,
                     logger=logger,
                 )
                 if result.returncode != 0:
@@ -306,7 +347,7 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
             # Push
             result = _run(
                 ["git", "push", "-u", "origin", branch],
-                cwd=project_dir,
+                cwd=worktree_path,
                 logger=logger,
             )
             if result.returncode != 0:
@@ -315,7 +356,7 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
             # Create PR if output is pr
             if task.output == "pr":
                 pr_title, pr_body = _generate_pr_metadata(
-                    task, project_dir, logger,
+                    task, worktree_path, logger,
                 )
                 result = _run(
                     [
@@ -323,7 +364,7 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
                         "--title", pr_title,
                         "--body", pr_body,
                     ],
-                    cwd=project_dir,
+                    cwd=worktree_path,
                     logger=logger,
                 )
                 if result.returncode != 0:
@@ -343,7 +384,4 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
         return {"result": "failure", "error": str(e)}
 
     finally:
-        # Clean up: discard any uncommitted changes then go back to main
-        _run(["git", "checkout", "."], cwd=project_dir, logger=logger)
-        _run(["git", "clean", "-fd"], cwd=project_dir, logger=logger)
-        _run(["git", "checkout", "main"], cwd=project_dir, logger=logger)
+        _cleanup_worktree(project_dir, worktree_path, branch, logger)

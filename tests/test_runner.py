@@ -13,6 +13,7 @@ from nightowl.runner import (
     _get_working_diff,
     _run_codex_fact_check,
     _run_fact_check_loop,
+    _worktree_path,
     run_task,
 )
 
@@ -151,23 +152,90 @@ class TestRunFactCheckLoop:
             mock_codex.assert_not_called()
 
 
-class TestRunTaskFactCheck:
-    def test_fact_check_called_when_enabled(self, tmp_path, logger):
-        task = _make_task(fact_check=True)
+class TestWorktreePath:
+    def test_path_under_cache_root(self, tmp_path):
+        # Use a project name with mixed case + spaces to exercise slugging
+        project = tmp_path / "My Project"
+        path = _worktree_path(project, "some-task")
+        assert path.parts[-2:] == ("my-project", "some-task")
+        assert ".cache/nightowl/worktrees" in str(path)
+
+
+class TestRunTaskUsesWorktree:
+    def test_worktree_add_and_remove_called(self, tmp_path, logger):
+        task = _make_task()
+        worktree = tmp_path / "wt"
         with patch("nightowl.runner._run") as mock_run, \
-             patch("nightowl.runner._run_fact_check_loop") as mock_fc:
+             patch("nightowl.runner._worktree_path", return_value=worktree):
             proc = MagicMock()
             proc.returncode = 0
             proc.stdout = ""
             mock_run.return_value = proc
 
             run_task(task, tmp_path, logger)
-            mock_fc.assert_called_once_with(task, tmp_path, logger)
+
+            cmds = [c.args[0] for c in mock_run.call_args_list]
+            # Worktree was created
+            assert any(
+                cmd[:3] == ["git", "worktree", "add"] and str(worktree) in cmd
+                for cmd in cmds
+            ), f"expected `git worktree add ... {worktree}` in {cmds}"
+            # And removed at the end
+            assert any(
+                cmd[:3] == ["git", "worktree", "remove"] and str(worktree) in cmd
+                for cmd in cmds
+            ), f"expected `git worktree remove ... {worktree}` in {cmds}"
+
+    def test_main_checkout_never_touched(self, tmp_path, logger):
+        """Project working tree is never checked out, reset, or cleaned."""
+        task = _make_task()
+        worktree = tmp_path / "wt"
+        with patch("nightowl.runner._run") as mock_run, \
+             patch("nightowl.runner._worktree_path", return_value=worktree):
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.stdout = ""
+            mock_run.return_value = proc
+
+            run_task(task, tmp_path, logger)
+
+            for c in mock_run.call_args_list:
+                cmd = c.args[0]
+                # No `git checkout` of any kind, no `git clean`, no `git reset`
+                # against the project directory itself.
+                if c.kwargs.get("cwd") == tmp_path:
+                    assert cmd[:2] != ["git", "checkout"], (
+                        f"Should not run `git checkout ...` in project dir: {cmd}"
+                    )
+                    assert cmd[:2] != ["git", "clean"], (
+                        f"Should not run `git clean ...` in project dir: {cmd}"
+                    )
+                    assert cmd[:2] != ["git", "reset"], (
+                        f"Should not run `git reset ...` in project dir: {cmd}"
+                    )
+
+
+class TestRunTaskFactCheck:
+    def test_fact_check_called_when_enabled(self, tmp_path, logger):
+        task = _make_task(fact_check=True)
+        worktree = tmp_path / "wt"
+        with patch("nightowl.runner._run") as mock_run, \
+             patch("nightowl.runner._run_fact_check_loop") as mock_fc, \
+             patch("nightowl.runner._worktree_path", return_value=worktree):
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.stdout = ""
+            mock_run.return_value = proc
+
+            run_task(task, tmp_path, logger)
+            mock_fc.assert_called_once_with(task, worktree, logger)
 
     def test_fact_check_not_called_when_disabled(self, tmp_path, logger):
         task = _make_task(fact_check=False)
+        worktree = tmp_path / "wt"
         with patch("nightowl.runner._run") as mock_run, \
-             patch("nightowl.runner._run_fact_check_loop") as mock_fc:
+             patch("nightowl.runner._run_fact_check_loop") as mock_fc, \
+             patch("nightowl.runner._worktree_path", return_value=worktree):
             proc = MagicMock()
             proc.returncode = 0
             proc.stdout = ""
