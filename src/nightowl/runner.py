@@ -71,7 +71,7 @@ def _generate_pr_metadata(
 
     logger.info("Generating PR title and body with Claude...")
     result = _run(
-        ["claude", "-p", "--output-format", "text", "--", prompt],
+        ["claude", "-p", "--model", "claude-opus-4-6", "--output-format", "text", "--", prompt],
         cwd=project_dir, logger=logger, timeout=120,
     )
 
@@ -204,7 +204,8 @@ def _run_fact_check_loop(
 
         _run(
             [
-                "claude", "-p", "--dangerously-skip-permissions",
+                "claude", "-p", "--model", "claude-opus-4-6",
+                "--dangerously-skip-permissions",
                 "--output-format", "json",
                 "--", fix_prompt,
             ],
@@ -285,6 +286,7 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
         claude_cmd = [
             "claude",
             "-p",
+            "--model", "claude-opus-4-6",
             "--dangerously-skip-permissions",
             "--output-format", "json",
             "--", task.prompt,
