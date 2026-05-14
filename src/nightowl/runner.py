@@ -368,14 +368,54 @@ def _cleanup_worktree(
     _run(["git", "branch", "-D", branch], cwd=project_dir, logger=logger)
 
 
+def _parse_claude_envelope(stdout: str | None) -> dict:
+    """Pull cost and token fields out of claude's ``--output-format json`` envelope.
+
+    Returns a dict with ``claude_cost_usd``, ``claude_input_tokens``,
+    ``claude_output_tokens``, and ``claude_cache_read_tokens``. Any field
+    the envelope doesn't carry (or that we can't parse because claude
+    crashed before emitting JSON) comes back as ``None`` — the run record
+    captures the best-effort fields and the runner moves on.
+    """
+    keys = (
+        "claude_cost_usd",
+        "claude_input_tokens",
+        "claude_output_tokens",
+        "claude_cache_read_tokens",
+    )
+    empty = {k: None for k in keys}
+    if not stdout:
+        return empty
+    try:
+        envelope = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError):
+        return empty
+    if not isinstance(envelope, dict):
+        return empty
+    usage = envelope.get("usage") or {}
+    return {
+        "claude_cost_usd": envelope.get("total_cost_usd"),
+        "claude_input_tokens": usage.get("input_tokens"),
+        "claude_output_tokens": usage.get("output_tokens"),
+        "claude_cache_read_tokens": usage.get("cache_read_input_tokens"),
+    }
+
+
 def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
     """Execute a single task. Returns a dict with result info.
 
     Each run happens in a throwaway git worktree under WORKTREE_ROOT. The main
     checkout in ``project_dir`` is never modified — so a nightowl run can't
     clobber uncommitted edits a developer left in the project working tree.
+
+    The returned dict always carries ``started_at``, ``ended_at``,
+    ``duration_s``, and the four ``claude_*`` fields (which may be
+    ``None`` if the envelope couldn't be parsed) in addition to the
+    ``result``, ``pr_url``, and ``error`` fields the caller already
+    relied on.
     """
-    date_str = datetime.now().strftime("%Y%m%d")
+    started_at = datetime.now()
+    date_str = started_at.strftime("%Y%m%d")
     # Date before task.id so that hosts that truncate branch slugs (e.g.
     # Cloudflare Pages preview aliases cut at 28 chars) keep the date in
     # the slug and don't collide across daily runs of the same task.
@@ -395,6 +435,9 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
         return {"result": "skipped_open_artifact", "skip_reason": skip_reason}
 
     record_task_started(str(project_dir), task.id)
+
+    claude_envelope_stdout: str | None = None
+    outcome: dict = {"result": "failure", "error": "task did not complete"}
 
     try:
         # Fetch origin
@@ -446,6 +489,7 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
             timeout=1800, env=claude_env,
         )
         logger.info(f"Claude exit code: {claude_result.returncode}")
+        claude_envelope_stdout = claude_result.stdout
 
         if claude_result.returncode != 0:
             raise RuntimeError(f"claude exited with code {claude_result.returncode}")
@@ -527,14 +571,23 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
         elif not has_changes:
             logger.info("No changes made by claude.")
 
-        info = {"result": "success"}
+        outcome = {"result": "success"}
         if pr_url:
-            info["pr_url"] = pr_url
-        return info
+            outcome["pr_url"] = pr_url
 
     except Exception as e:
         logger.error(f"Task {task.id} failed: {e}")
-        return {"result": "failure", "error": str(e)}
+        outcome = {"result": "failure", "error": str(e)}
 
     finally:
         _cleanup_worktree(project_dir, worktree_path, branch, logger)
+
+    ended_at = datetime.now()
+    outcome["task_id"] = task.id
+    outcome["started_at"] = started_at.isoformat(timespec="seconds")
+    outcome["ended_at"] = ended_at.isoformat(timespec="seconds")
+    outcome["duration_s"] = int((ended_at - started_at).total_seconds())
+    outcome.setdefault("pr_url", None)
+    outcome.setdefault("error", None)
+    outcome.update(_parse_claude_envelope(claude_envelope_stdout))
+    return outcome

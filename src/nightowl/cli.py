@@ -7,8 +7,10 @@ from pathlib import Path
 import click
 
 from nightowl.config import WEEKDAY_DISPLAY, load_config
+from nightowl.email import send_summary_email
 from nightowl.logging import setup_logging
 from nightowl.runner import run_task
+from nightowl.runs import append_run
 from nightowl.state import (
     get_all_task_states,
     is_task_eligible,
@@ -86,20 +88,31 @@ def run(task_id: str | None, dry_run: bool):
         return
 
     any_failed = False
-    for task in tasks_to_run:
-        result = run_task(task, Path.cwd(), logger)
-        record_task_result(
-            project_path,
-            task.id,
-            result["result"],
-            pr_url=result.get("pr_url"),
-            error=result.get("error"),
-            skip_reason=result.get("skip_reason"),
-        )
-        # `skipped_open_artifact` is not a failure — the previous run's
-        # artifact is still open and the task deliberately didn't run.
-        if result["result"] == "failure":
-            any_failed = True
+    run_records: list[dict] = []
+    try:
+        for task in tasks_to_run:
+            result = run_task(task, Path.cwd(), logger)
+            record_task_result(
+                project_path,
+                task.id,
+                result["result"],
+                pr_url=result.get("pr_url"),
+                error=result.get("error"),
+                skip_reason=result.get("skip_reason"),
+            )
+            append_run(project_path, result)
+            run_records.append(result)
+            # `skipped_open_artifact` is not a failure — the previous run's
+            # artifact is still open and the task deliberately didn't run.
+            if result["result"] == "failure":
+                any_failed = True
+    finally:
+        # Email the summary even if the loop is interrupted, so a crash
+        # mid-run still surfaces what did and didn't fire. ``run_records``
+        # may be empty if the first task killed the process before
+        # returning a result — ``send_summary_email`` no-ops on empty
+        # input so we never spam Tim for a zero-tasks run.
+        send_summary_email(run_records, logger, project_dir=project_path)
 
     if any_failed:
         sys.exit(1)
