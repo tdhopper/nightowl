@@ -10,6 +10,7 @@ from logging import Logger
 from pathlib import Path
 
 from nightowl.config import Task
+from nightowl.state import record_task_started
 
 
 WORKTREE_ROOT = Path.home() / ".cache" / "nightowl" / "worktrees"
@@ -250,6 +251,8 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
     logger.info(f"--- Task: {task.name} ({task.id}) ---")
     logger.info(f"Branch: {branch}")
     logger.info(f"Worktree: {worktree_path}")
+
+    record_task_started(str(project_dir), task.id)
 
     try:
         # Fetch origin

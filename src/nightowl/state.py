@@ -25,6 +25,26 @@ def get_task_state(project_path: str, task_id: str) -> dict | None:
     return state.get(project_path, {}).get(task_id)
 
 
+def record_task_started(project_path: str, task_id: str) -> None:
+    """Mark a task as started so a crash mid-run doesn't refire on the next launchd hour.
+
+    Eligibility uses ``last_run`` regardless of result. Writing a marker
+    here means a task that crashes or gets killed (launchd timeout, OOM,
+    system reboot) still consumes its interval. Otherwise the same task
+    fires every launchd hour until something records terminal state, which
+    collides with the date-keyed branch name from the crashed run and
+    produces a stream of ``gh pr create ... already exists`` failures.
+    Terminal state from ``record_task_result`` overwrites this on completion.
+    """
+    state = _read_state()
+    project = state.setdefault(project_path, {})
+    project[task_id] = {
+        "last_run": datetime.now().isoformat(timespec="seconds"),
+        "result": "started",
+    }
+    _write_state(state)
+
+
 def record_task_result(
     project_path: str,
     task_id: str,
