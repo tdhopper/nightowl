@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from nightowl.config import (
+    SkipIfOpenCheck,
     load_config,
     parse_frontmatter,
     parse_interval,
@@ -249,6 +250,133 @@ class TestLoadConfig:
         )
         config = load_config(nightowl_dir)
         assert config.tasks[0].fact_check is True
+
+    def test_skip_if_open_defaults_empty(self, tmp_path):
+        nightowl_dir = _make_project(
+            tmp_path,
+            {"t.md": "---\nname: T\ninterval: 24h\n---\nDo it\n"},
+        )
+        config = load_config(nightowl_dir)
+        assert config.tasks[0].skip_if_open == []
+
+    def test_skip_if_open_list_of_strings(self, tmp_path):
+        nightowl_dir = _make_project(
+            tmp_path,
+            {
+                "t.md": (
+                    "---\n"
+                    'name: "T"\n'
+                    "interval: 24h\n"
+                    "skip_if_open:\n"
+                    "  - pr-branch-prefix\n"
+                    "  - issue-title\n"
+                    "---\n"
+                    "do it\n"
+                ),
+            },
+        )
+        config = load_config(nightowl_dir)
+        checks = config.tasks[0].skip_if_open
+        assert len(checks) == 2
+        assert checks[0].type == "pr-branch-prefix"
+        assert checks[0].value is None
+        assert checks[0].threshold == 1
+        assert checks[1].type == "issue-title"
+
+    def test_skip_if_open_mapping_with_value_and_threshold(self, tmp_path):
+        nightowl_dir = _make_project(
+            tmp_path,
+            {
+                "t.md": (
+                    "---\n"
+                    'name: "T"\n'
+                    "interval: 24h\n"
+                    "skip_if_open:\n"
+                    "  - type: issue-label\n"
+                    "    value: source:competitive-analysis\n"
+                    "    threshold: 5\n"
+                    "---\n"
+                    "do it\n"
+                ),
+            },
+        )
+        config = load_config(nightowl_dir)
+        checks = config.tasks[0].skip_if_open
+        assert len(checks) == 1
+        assert checks[0].type == "issue-label"
+        assert checks[0].value == "source:competitive-analysis"
+        assert checks[0].threshold == 5
+
+    def test_skip_if_open_invalid_type(self, tmp_path):
+        nightowl_dir = _make_project(
+            tmp_path,
+            {
+                "t.md": (
+                    "---\n"
+                    'name: "T"\n'
+                    "interval: 24h\n"
+                    "skip_if_open: [made-up-type]\n"
+                    "---\n"
+                    "do it\n"
+                ),
+            },
+        )
+        with pytest.raises(ValueError, match="skip_if_open"):
+            load_config(nightowl_dir)
+
+    def test_skip_if_open_not_a_list(self, tmp_path):
+        nightowl_dir = _make_project(
+            tmp_path,
+            {
+                "t.md": (
+                    "---\n"
+                    'name: "T"\n'
+                    "interval: 24h\n"
+                    "skip_if_open: pr-branch-prefix\n"
+                    "---\n"
+                    "do it\n"
+                ),
+            },
+        )
+        with pytest.raises(ValueError, match="must be a list"):
+            load_config(nightowl_dir)
+
+    def test_skip_if_open_missing_type_in_mapping(self, tmp_path):
+        nightowl_dir = _make_project(
+            tmp_path,
+            {
+                "t.md": (
+                    "---\n"
+                    'name: "T"\n'
+                    "interval: 24h\n"
+                    "skip_if_open:\n"
+                    "  - value: foo\n"
+                    "---\n"
+                    "do it\n"
+                ),
+            },
+        )
+        with pytest.raises(ValueError, match="'type' is required"):
+            load_config(nightowl_dir)
+
+    def test_skip_if_open_threshold_zero_rejected(self, tmp_path):
+        nightowl_dir = _make_project(
+            tmp_path,
+            {
+                "t.md": (
+                    "---\n"
+                    'name: "T"\n'
+                    "interval: 24h\n"
+                    "skip_if_open:\n"
+                    "  - type: pr-branch-prefix\n"
+                    "    threshold: 0\n"
+                    "---\n"
+                    "do it\n"
+                ),
+            },
+        )
+        with pytest.raises(ValueError, match="threshold"):
+            load_config(nightowl_dir)
 
     def test_get_task(self, tmp_path):
         nightowl_dir = _make_project(

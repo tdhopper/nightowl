@@ -58,6 +58,42 @@ def parse_frontmatter(text: str, source: str = "<string>") -> tuple[dict, str]:
     return frontmatter, body
 
 
+SKIP_IF_OPEN_TYPES = ("pr-branch-prefix", "issue-label", "issue-title")
+
+
+class SkipIfOpenCheck:
+    """One artifact-existence check that, if it matches, skips the task.
+
+    ``type`` selects which GitHub query to run:
+
+    - ``pr-branch-prefix``: open PRs authored by ``@me`` whose branch starts
+      with ``nightowl/`` and contains ``value``. Default ``value`` is the
+      task id.
+    - ``issue-label``: open issues with the given label. Default ``value``
+      is ``source:<task-id>``.
+    - ``issue-title``: open issues with ``value`` in the title. Default
+      ``value`` is the task id.
+
+    ``threshold`` is the count at which the task is skipped. Default ``1``
+    (skip if any matching artifact is open). Use a higher number to allow
+    a small backlog (e.g. competitive-analysis allows 4 untriaged batches).
+    """
+
+    def __init__(self, type: str, value: str | None = None, threshold: int = 1):
+        if type not in SKIP_IF_OPEN_TYPES:
+            raise ValueError(
+                f"Invalid skip_if_open type: {type!r}. Must be one of: "
+                f"{', '.join(SKIP_IF_OPEN_TYPES)}."
+            )
+        if threshold < 1:
+            raise ValueError(
+                f"Invalid skip_if_open threshold: {threshold}. Must be >= 1."
+            )
+        self.type = type
+        self.value = value
+        self.threshold = threshold
+
+
 class Task:
     def __init__(
         self,
@@ -67,6 +103,7 @@ class Task:
         prompt: str,
         output: str = "pr",
         fact_check: bool = False,
+        skip_if_open: list[SkipIfOpenCheck] | None = None,
     ):
         self.id = id
         self.name = name
@@ -76,6 +113,7 @@ class Task:
             raise ValueError(f"Invalid output type: {output!r}. Must be 'pr', 'commit', or 'none'.")
         self.output = output
         self.fact_check = fact_check
+        self.skip_if_open = skip_if_open or []
 
 
 CADENCES = ("daily", "hourly")
@@ -129,6 +167,46 @@ def _load_schedule(path: Path) -> dict:
     }
 
 
+def _parse_skip_if_open(raw: object, source: str) -> list[SkipIfOpenCheck]:
+    """Parse the frontmatter ``skip_if_open:`` field into a list of checks.
+
+    Each list entry is either a string (the enum type, with default value
+    and threshold) or a mapping with ``type``, optional ``value``, and
+    optional ``threshold``.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError(
+            f"{source}: 'skip_if_open' must be a list (got {type(raw).__name__})."
+        )
+    checks: list[SkipIfOpenCheck] = []
+    for i, entry in enumerate(raw):
+        loc = f"{source}: skip_if_open[{i}]"
+        if isinstance(entry, str):
+            checks.append(SkipIfOpenCheck(type=entry))
+            continue
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"{loc}: each entry must be a string or a mapping "
+                f"(got {type(entry).__name__})."
+            )
+        if "type" not in entry:
+            raise ValueError(f"{loc}: 'type' is required.")
+        type_ = entry["type"]
+        value = entry.get("value")
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"{loc}: 'value' must be a string if set.")
+        threshold = entry.get("threshold", 1)
+        if not isinstance(threshold, int) or isinstance(threshold, bool):
+            raise ValueError(f"{loc}: 'threshold' must be an integer.")
+        try:
+            checks.append(SkipIfOpenCheck(type=type_, value=value, threshold=threshold))
+        except ValueError as e:
+            raise ValueError(f"{loc}: {e}") from e
+    return checks
+
+
 def _load_task(path: Path) -> Task:
     fm, body = parse_frontmatter(path.read_text(), source=path.name)
     for key in ("name", "interval"):
@@ -144,6 +222,7 @@ def _load_task(path: Path) -> Task:
         prompt=prompt,
         output=fm.get("output", "pr"),
         fact_check=bool(fm.get("fact_check", False)),
+        skip_if_open=_parse_skip_if_open(fm.get("skip_if_open"), source=path.name),
     )
 
 
@@ -155,7 +234,9 @@ def load_config(path: Path | None = None) -> Config:
     - `_schedule.md`: YAML frontmatter with `window_start`, `window_end`, and
       optional `skip_weekdays` (list of weekday names). Body is ignored.
     - `<task-id>.md`: one per task. Frontmatter has `name`, `interval`, and
-      optional `output` (default "pr") and `fact_check` (default false). The
+      optional `output` (default "pr"), `fact_check` (default false), and
+      `skip_if_open` (default none — a list of artifact-existence checks
+      that, if any matches, skips the run; see ``SkipIfOpenCheck``). The
       markdown body is the task prompt. The filename stem becomes the task id.
     - Any other `_*.md` file is reserved and ignored.
     """

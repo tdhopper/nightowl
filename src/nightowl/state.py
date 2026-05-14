@@ -51,6 +51,7 @@ def record_task_result(
     result: str,
     pr_url: str | None = None,
     error: str | None = None,
+    skip_reason: str | None = None,
 ) -> None:
     state = _read_state()
     project = state.setdefault(project_path, {})
@@ -62,6 +63,8 @@ def record_task_result(
         entry["pr_url"] = pr_url
     if error:
         entry["error"] = error
+    if skip_reason:
+        entry["skip_reason"] = skip_reason
     project[task_id] = entry
     _write_state(state)
 

@@ -9,7 +9,7 @@ from datetime import datetime
 from logging import Logger
 from pathlib import Path
 
-from nightowl.config import Task
+from nightowl.config import SkipIfOpenCheck, Task
 from nightowl.state import record_task_started
 
 
@@ -216,6 +216,122 @@ def _run_fact_check_loop(
     logger.warning(f"Fact-check did not pass after {max_iterations} iterations, proceeding anyway")
 
 
+def _check_skip_if_open(
+    task: Task, project_dir: Path, logger: Logger,
+) -> str | None:
+    """If any configured artifact check matches, return a human-readable reason.
+
+    Returns ``None`` if no check matches (task should run). The runner uses
+    this to skip a task when a previous run's PR or issue is still open and
+    Tim hasn't reviewed it — piling on another artifact just creates noise.
+
+    Each check shells out to ``gh`` and counts matching open artifacts. If
+    the count is >= ``threshold``, the task is skipped. Any ``gh`` failure
+    is logged and treated as "no match" so a transient API outage doesn't
+    permanently wedge a task.
+    """
+    for check in task.skip_if_open:
+        count, ref = _run_skip_check(check, task.id, project_dir, logger)
+        if count is None:
+            continue
+        if count >= check.threshold:
+            return (
+                f"{check.type} matched {count} open artifact(s) "
+                f"(threshold {check.threshold}): {ref}"
+            )
+    return None
+
+
+def _run_skip_check(
+    check: SkipIfOpenCheck, task_id: str, project_dir: Path, logger: Logger,
+) -> tuple[int | None, str]:
+    """Run one ``gh`` query for a skip check. Returns (count, ref_description).
+
+    ``count`` is ``None`` if the query failed (treated as "no match").
+    """
+    if check.type == "pr-branch-prefix":
+        value = check.value or task_id
+        # Match either `nightowl/<task-id>` or `nightowl/<date>-<task-id>`
+        # (the runner uses the date-prefixed form, but legacy branches and
+        # custom slugs like `nightowl/trim-bloat-<page>` also count).
+        cmd = [
+            "gh", "pr", "list",
+            "--author", "@me",
+            "--state", "open",
+            "--json", "headRefName,url",
+        ]
+        result = _run(cmd, cwd=project_dir, logger=logger, timeout=60)
+        if result.returncode != 0:
+            logger.warning(
+                f"skip_if_open pr-branch-prefix check failed (rc={result.returncode}): "
+                f"{result.stderr.strip()}"
+            )
+            return None, ""
+        try:
+            prs = json.loads(result.stdout or "[]")
+        except json.JSONDecodeError as e:
+            logger.warning(f"skip_if_open pr-branch-prefix parse failed: {e}")
+            return None, ""
+        matches = [
+            p for p in prs
+            if isinstance(p, dict)
+            and p.get("headRefName", "").startswith("nightowl/")
+            and value in p.get("headRefName", "")
+        ]
+        ref = matches[0].get("url", matches[0].get("headRefName", "")) if matches else ""
+        return len(matches), ref
+
+    if check.type == "issue-label":
+        value = check.value or f"source:{task_id}"
+        cmd = [
+            "gh", "issue", "list",
+            "--label", value,
+            "--state", "open",
+            "--json", "number,url",
+        ]
+        result = _run(cmd, cwd=project_dir, logger=logger, timeout=60)
+        if result.returncode != 0:
+            logger.warning(
+                f"skip_if_open issue-label check failed (rc={result.returncode}): "
+                f"{result.stderr.strip()}"
+            )
+            return None, ""
+        try:
+            issues = json.loads(result.stdout or "[]")
+        except json.JSONDecodeError as e:
+            logger.warning(f"skip_if_open issue-label parse failed: {e}")
+            return None, ""
+        ref = issues[0].get("url", "") if issues else ""
+        return len(issues), ref
+
+    if check.type == "issue-title":
+        value = check.value or task_id
+        cmd = [
+            "gh", "issue", "list",
+            "--author", "@me",
+            "--state", "open",
+            "--search", f"{value} in:title",
+            "--json", "number,url",
+        ]
+        result = _run(cmd, cwd=project_dir, logger=logger, timeout=60)
+        if result.returncode != 0:
+            logger.warning(
+                f"skip_if_open issue-title check failed (rc={result.returncode}): "
+                f"{result.stderr.strip()}"
+            )
+            return None, ""
+        try:
+            issues = json.loads(result.stdout or "[]")
+        except json.JSONDecodeError as e:
+            logger.warning(f"skip_if_open issue-title parse failed: {e}")
+            return None, ""
+        ref = issues[0].get("url", "") if issues else ""
+        return len(issues), ref
+
+    # Unreachable — SkipIfOpenCheck validates type at construction.
+    return None, ""
+
+
 def _cleanup_worktree(
     project_dir: Path, worktree_path: Path, branch: str, logger: Logger,
 ) -> None:
@@ -251,6 +367,14 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
     logger.info(f"--- Task: {task.name} ({task.id}) ---")
     logger.info(f"Branch: {branch}")
     logger.info(f"Worktree: {worktree_path}")
+
+    # Check skip_if_open BEFORE marking the task as started. A skip
+    # shouldn't consume the interval — the task simply didn't run, so
+    # the next eligible window should still fire normally.
+    skip_reason = _check_skip_if_open(task, project_dir, logger)
+    if skip_reason is not None:
+        logger.info(f"Task {task.id} skipping: {skip_reason}")
+        return {"result": "skipped_open_artifact", "skip_reason": skip_reason}
 
     record_task_started(str(project_dir), task.id)
 
