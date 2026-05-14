@@ -94,7 +94,10 @@ def run(task_id: str | None, dry_run: bool):
             result["result"],
             pr_url=result.get("pr_url"),
             error=result.get("error"),
+            skip_reason=result.get("skip_reason"),
         )
+        # `skipped_open_artifact` is not a failure — the previous run's
+        # artifact is still open and the task deliberately didn't run.
         if result["result"] == "failure":
             any_failed = True
 
@@ -140,6 +143,8 @@ def status(stale: bool):
                 click.echo(f"  PR: {task_state['pr_url']}")
             if task_state.get("error"):
                 click.echo(f"  Error: {task_state['error']}")
+            if task_state.get("skip_reason"):
+                click.echo(f"  Skip reason: {task_state['skip_reason']}")
             eligible = is_task_eligible(project_path, task.id, task.interval)
             click.echo(f"  Eligible: {'yes' if eligible else 'no'}")
             if not eligible and "last_run" in task_state:

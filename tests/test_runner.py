@@ -9,11 +9,13 @@ from unittest.mock import MagicMock, patch, call
 import pytest
 
 from nightowl import state
-from nightowl.config import Task
+from nightowl.config import SkipIfOpenCheck, Task
 from nightowl.runner import (
+    _check_skip_if_open,
     _get_working_diff,
     _run_codex_fact_check,
     _run_fact_check_loop,
+    _run_skip_check,
     _worktree_path,
     run_task,
 )
@@ -25,13 +27,17 @@ def tmp_state(tmp_path, monkeypatch):
     monkeypatch.setattr(state, "STATE_PATH", tmp_path / "state.json")
 
 
-def _make_task(fact_check: bool = False) -> Task:
+def _make_task(
+    fact_check: bool = False,
+    skip_if_open: list[SkipIfOpenCheck] | None = None,
+) -> Task:
     return Task(
         id="test-task",
         name="Test Task",
         interval=timedelta(hours=24),
         prompt="Do something",
         fact_check=fact_check,
+        skip_if_open=skip_if_open,
     )
 
 
@@ -331,3 +337,202 @@ class TestRunTaskFactCheck:
 
             run_task(task, tmp_path, logger)
             mock_fc.assert_not_called()
+
+
+def _gh_proc(stdout: str = "[]", returncode: int = 0) -> MagicMock:
+    proc = MagicMock()
+    proc.returncode = returncode
+    proc.stdout = stdout
+    proc.stderr = ""
+    return proc
+
+
+class TestRunSkipCheck:
+    def test_pr_branch_prefix_match(self, tmp_path, logger):
+        check = SkipIfOpenCheck(type="pr-branch-prefix")
+        # Two PRs: one matching, one not.
+        gh_out = (
+            '[{"headRefName": "nightowl/20260513-test-task", '
+            '"url": "https://gh/pr/42"}, '
+            '{"headRefName": "feature/unrelated", "url": "https://gh/pr/9"}]'
+        )
+        with patch("nightowl.runner._run", return_value=_gh_proc(gh_out)):
+            count, ref = _run_skip_check(check, "test-task", tmp_path, logger)
+        assert count == 1
+        assert "pr/42" in ref
+
+    def test_pr_branch_prefix_no_match(self, tmp_path, logger):
+        check = SkipIfOpenCheck(type="pr-branch-prefix")
+        gh_out = '[{"headRefName": "nightowl/20260513-other-task", "url": "u"}]'
+        with patch("nightowl.runner._run", return_value=_gh_proc(gh_out)):
+            count, _ = _run_skip_check(check, "test-task", tmp_path, logger)
+        assert count == 0
+
+    def test_pr_branch_prefix_requires_nightowl_prefix(self, tmp_path, logger):
+        """A branch containing the task id but not under `nightowl/` is ignored.
+
+        Without this, unrelated topic branches (e.g. `feature/test-task-fix`)
+        would suppress the run.
+        """
+        check = SkipIfOpenCheck(type="pr-branch-prefix")
+        gh_out = '[{"headRefName": "feature/test-task-fix", "url": "u"}]'
+        with patch("nightowl.runner._run", return_value=_gh_proc(gh_out)):
+            count, _ = _run_skip_check(check, "test-task", tmp_path, logger)
+        assert count == 0
+
+    def test_pr_branch_prefix_custom_value(self, tmp_path, logger):
+        check = SkipIfOpenCheck(type="pr-branch-prefix", value="custom-slug")
+        gh_out = '[{"headRefName": "nightowl/custom-slug-foo", "url": "u"}]'
+        with patch("nightowl.runner._run", return_value=_gh_proc(gh_out)):
+            count, _ = _run_skip_check(check, "test-task", tmp_path, logger)
+        assert count == 1
+
+    def test_issue_label_default_value(self, tmp_path, logger):
+        check = SkipIfOpenCheck(type="issue-label")
+        gh_out = '[{"number": 12, "url": "https://gh/issue/12"}]'
+        with patch("nightowl.runner._run", return_value=_gh_proc(gh_out)) as mock_run:
+            count, ref = _run_skip_check(check, "comp-analysis", tmp_path, logger)
+            cmd = mock_run.call_args[0][0]
+            assert "--label" in cmd
+            assert "source:comp-analysis" in cmd
+        assert count == 1
+        assert "issue/12" in ref
+
+    def test_issue_label_custom_value(self, tmp_path, logger):
+        check = SkipIfOpenCheck(
+            type="issue-label", value="source:competitive-analysis",
+        )
+        gh_out = '[{"number": 1, "url": "u"}, {"number": 2, "url": "u"}]'
+        with patch("nightowl.runner._run", return_value=_gh_proc(gh_out)) as mock_run:
+            count, _ = _run_skip_check(check, "any-task", tmp_path, logger)
+            cmd = mock_run.call_args[0][0]
+            assert "source:competitive-analysis" in cmd
+        assert count == 2
+
+    def test_issue_title_search(self, tmp_path, logger):
+        check = SkipIfOpenCheck(type="issue-title")
+        gh_out = '[{"number": 7, "url": "https://gh/issue/7"}]'
+        with patch("nightowl.runner._run", return_value=_gh_proc(gh_out)) as mock_run:
+            count, ref = _run_skip_check(check, "scope-audit", tmp_path, logger)
+            cmd = mock_run.call_args[0][0]
+            assert "--search" in cmd
+            assert "scope-audit in:title" in cmd
+        assert count == 1
+        assert "issue/7" in ref
+
+    def test_gh_failure_treated_as_no_match(self, tmp_path, logger):
+        check = SkipIfOpenCheck(type="pr-branch-prefix")
+        with patch(
+            "nightowl.runner._run",
+            return_value=_gh_proc(stdout="", returncode=1),
+        ):
+            count, _ = _run_skip_check(check, "test-task", tmp_path, logger)
+        assert count is None  # signals "treat as no match"
+
+    def test_gh_invalid_json_treated_as_no_match(self, tmp_path, logger):
+        check = SkipIfOpenCheck(type="pr-branch-prefix")
+        with patch("nightowl.runner._run", return_value=_gh_proc("not-json")):
+            count, _ = _run_skip_check(check, "test-task", tmp_path, logger)
+        assert count is None
+
+
+class TestCheckSkipIfOpen:
+    def test_no_checks_returns_none(self, tmp_path, logger):
+        task = _make_task()
+        assert _check_skip_if_open(task, tmp_path, logger) is None
+
+    def test_match_returns_reason(self, tmp_path, logger):
+        task = _make_task(
+            skip_if_open=[SkipIfOpenCheck(type="pr-branch-prefix")],
+        )
+        with patch(
+            "nightowl.runner._run_skip_check", return_value=(1, "https://gh/pr/1"),
+        ):
+            reason = _check_skip_if_open(task, tmp_path, logger)
+        assert reason is not None
+        assert "pr-branch-prefix" in reason
+        assert "https://gh/pr/1" in reason
+
+    def test_no_match_returns_none(self, tmp_path, logger):
+        task = _make_task(
+            skip_if_open=[SkipIfOpenCheck(type="pr-branch-prefix")],
+        )
+        with patch("nightowl.runner._run_skip_check", return_value=(0, "")):
+            assert _check_skip_if_open(task, tmp_path, logger) is None
+
+    def test_threshold_respected(self, tmp_path, logger):
+        """A count below threshold does not skip."""
+        task = _make_task(
+            skip_if_open=[
+                SkipIfOpenCheck(type="issue-label", threshold=5),
+            ],
+        )
+        with patch("nightowl.runner._run_skip_check", return_value=(3, "u")):
+            assert _check_skip_if_open(task, tmp_path, logger) is None
+        with patch("nightowl.runner._run_skip_check", return_value=(5, "u")):
+            assert _check_skip_if_open(task, tmp_path, logger) is not None
+
+    def test_gh_failure_does_not_skip(self, tmp_path, logger):
+        """A transient `gh` failure must not permanently wedge a task."""
+        task = _make_task(
+            skip_if_open=[SkipIfOpenCheck(type="pr-branch-prefix")],
+        )
+        with patch("nightowl.runner._run_skip_check", return_value=(None, "")):
+            assert _check_skip_if_open(task, tmp_path, logger) is None
+
+    def test_first_match_wins(self, tmp_path, logger):
+        """Multiple checks: any match triggers a skip."""
+        task = _make_task(
+            skip_if_open=[
+                SkipIfOpenCheck(type="pr-branch-prefix"),
+                SkipIfOpenCheck(type="issue-title"),
+            ],
+        )
+        with patch(
+            "nightowl.runner._run_skip_check",
+            side_effect=[(0, ""), (1, "https://gh/issue/9")],
+        ):
+            reason = _check_skip_if_open(task, tmp_path, logger)
+        assert reason is not None
+        assert "issue-title" in reason
+
+
+class TestRunTaskSkipIfOpen:
+    def test_skip_returns_early_without_subprocess(self, tmp_path, logger):
+        """When a skip check matches, run_task must not invoke claude or
+        touch the worktree."""
+        task = _make_task(
+            skip_if_open=[SkipIfOpenCheck(type="pr-branch-prefix")],
+        )
+        worktree = tmp_path / "wt"
+        with patch(
+            "nightowl.runner._check_skip_if_open",
+            return_value="pr-branch-prefix matched 1: https://gh/pr/1",
+        ), \
+             patch("nightowl.runner._run") as mock_run, \
+             patch("nightowl.runner._worktree_path", return_value=worktree), \
+             patch("nightowl.runner.record_task_started") as mock_started:
+            result = run_task(task, tmp_path, logger)
+            assert result["result"] == "skipped_open_artifact"
+            assert "https://gh/pr/1" in result["skip_reason"]
+            # No subprocesses, no worktree, no started marker.
+            mock_run.assert_not_called()
+            mock_started.assert_not_called()
+
+    def test_no_skip_runs_normally(self, tmp_path, logger):
+        task = _make_task(
+            skip_if_open=[SkipIfOpenCheck(type="pr-branch-prefix")],
+        )
+        worktree = tmp_path / "wt"
+        with patch("nightowl.runner._check_skip_if_open", return_value=None), \
+             patch("nightowl.runner._run") as mock_run, \
+             patch("nightowl.runner._worktree_path", return_value=worktree):
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.stdout = ""
+            mock_run.return_value = proc
+
+            result = run_task(task, tmp_path, logger)
+            assert result["result"] == "success"
+            # Subprocesses were called (fetch, worktree add, claude, etc.)
+            assert mock_run.call_count > 0
