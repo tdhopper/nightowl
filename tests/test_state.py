@@ -99,3 +99,38 @@ class TestState:
         assert "t1" in all_states
         assert "t2" in all_states
         assert state.get_all_task_states("/other") == {}
+
+    def test_record_task_disappeared_preserves_last_run(self):
+        """A task that ran before then disappeared should keep last_run for
+        the status view, and gain a noticed_at timestamp."""
+        state.record_task_result("/proj", "ghost", "success")
+        prev_last_run = state.get_task_state("/proj", "ghost")["last_run"]
+
+        state.record_task_disappeared("/proj", "ghost")
+
+        s = state.get_task_state("/proj", "ghost")
+        assert s["result"] == "disappeared"
+        assert s["last_run"] == prev_last_run
+        assert "noticed_at" in s
+
+    def test_record_task_disappeared_no_prior_state(self):
+        state.record_task_disappeared("/proj", "never-ran")
+        s = state.get_task_state("/proj", "never-ran")
+        assert s["result"] == "disappeared"
+        assert "noticed_at" in s
+        assert "last_run" not in s
+
+    def test_record_task_disappeared_idempotent(self):
+        """Re-marking a disappeared task preserves its original noticed_at."""
+        state.record_task_result("/proj", "ghost", "success")
+        state.record_task_disappeared("/proj", "ghost")
+        original_noticed = state.get_task_state("/proj", "ghost")["noticed_at"]
+
+        future = datetime.now() + timedelta(hours=5)
+        with patch("nightowl.state.datetime") as mock_dt:
+            mock_dt.now.return_value = future
+            mock_dt.fromisoformat = datetime.fromisoformat
+            state.record_task_disappeared("/proj", "ghost")
+
+        # noticed_at should be unchanged
+        assert state.get_task_state("/proj", "ghost")["noticed_at"] == original_noticed

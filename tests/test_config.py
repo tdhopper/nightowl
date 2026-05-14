@@ -1,3 +1,4 @@
+import subprocess
 from datetime import timedelta
 from pathlib import Path
 
@@ -9,6 +10,27 @@ from nightowl.config import (
     parse_interval,
     parse_weekday,
 )
+
+
+def _git_init_and_add(repo_root: Path, files: list[Path]) -> None:
+    """Initialize a git repo at ``repo_root`` and stage the listed files."""
+    subprocess.run(["git", "init", "-q", str(repo_root)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo_root), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo_root), "config", "user.name", "Test"],
+        check=True,
+    )
+    for f in files:
+        rel = f.relative_to(repo_root)
+        subprocess.run(
+            ["git", "-C", str(repo_root), "add", "--", str(rel)], check=True,
+        )
+    subprocess.run(
+        ["git", "-C", str(repo_root), "commit", "-q", "-m", "seed"], check=True,
+    )
 
 
 def _make_project(tmp_path, tasks: dict[str, str], schedule: str | None = None) -> Path:
@@ -330,3 +352,78 @@ class TestLoadConfig:
         )
         with pytest.raises(ValueError, match="Invalid weekday"):
             load_config(nightowl_dir)
+
+
+class TestLoadConfigGitEnumeration:
+    """Task files are enumerated via `git ls-files` to ignore stray .md files."""
+
+    def test_untracked_task_file_is_ignored(self, tmp_path):
+        nightowl_dir = _make_project(
+            tmp_path,
+            {
+                "real-task.md": (
+                    "---\nname: Real\ninterval: 24h\n---\nDo it\n"
+                ),
+            },
+        )
+        _git_init_and_add(
+            tmp_path,
+            [nightowl_dir / "_schedule.md", nightowl_dir / "real-task.md"],
+        )
+        # Drop an untracked stale .md file. Previously this would fire as a task.
+        (nightowl_dir / "ghost-task.md").write_text(
+            "---\nname: Ghost\ninterval: 24h\n---\nshould not load\n"
+        )
+
+        config = load_config(nightowl_dir)
+        assert [t.id for t in config.tasks] == ["real-task"]
+
+    def test_tracked_task_file_is_loaded(self, tmp_path):
+        nightowl_dir = _make_project(
+            tmp_path,
+            {
+                "a.md": "---\nname: A\ninterval: 24h\n---\nA\n",
+                "b.md": "---\nname: B\ninterval: 24h\n---\nB\n",
+            },
+        )
+        _git_init_and_add(
+            tmp_path,
+            [
+                nightowl_dir / "_schedule.md",
+                nightowl_dir / "a.md",
+                nightowl_dir / "b.md",
+            ],
+        )
+        config = load_config(nightowl_dir)
+        assert sorted(t.id for t in config.tasks) == ["a", "b"]
+
+    def test_underscore_prefixed_still_skipped_with_git(self, tmp_path):
+        nightowl_dir = _make_project(
+            tmp_path,
+            {
+                "real.md": "---\nname: R\ninterval: 24h\n---\nx\n",
+                "_notes.md": "tracked notes file, not a task",
+            },
+        )
+        _git_init_and_add(
+            tmp_path,
+            [
+                nightowl_dir / "_schedule.md",
+                nightowl_dir / "real.md",
+                nightowl_dir / "_notes.md",
+            ],
+        )
+        config = load_config(nightowl_dir)
+        assert [t.id for t in config.tasks] == ["real"]
+
+    def test_non_git_dir_falls_back_to_glob_with_warning(self, tmp_path, caplog):
+        # No `git init` — fall back to glob path.
+        nightowl_dir = _make_project(
+            tmp_path,
+            {"t.md": "---\nname: T\ninterval: 24h\n---\nDo it\n"},
+        )
+        with caplog.at_level("WARNING", logger="nightowl"):
+            config = load_config(nightowl_dir)
+
+        assert [t.id for t in config.tasks] == ["t"]
+        assert any("falling back to disk glob" in r.message for r in caplog.records)

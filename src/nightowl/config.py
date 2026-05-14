@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
 import re
+import subprocess
 from datetime import timedelta
 from pathlib import Path
 
 import yaml
+
+
+logger = logging.getLogger("nightowl")
 
 
 WEEKDAY_NAMES = {
@@ -147,6 +152,42 @@ def _load_task(path: Path) -> Task:
     )
 
 
+def _git_tracked_task_files(path: Path) -> list[Path] | None:
+    """Return task `.md` files that git tracks under ``path``.
+
+    Returns ``None`` if git is unavailable, the directory isn't part of a git
+    working tree, or the command fails for any reason — caller is expected to
+    fall back to a disk glob with a WARN log.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-z", "--", "*.md"],
+            cwd=path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    # `-z` separates paths with NUL bytes (handles spaces/newlines in names).
+    raw = result.stdout
+    if not raw:
+        return []
+    files: list[Path] = []
+    for entry in raw.split("\0"):
+        if not entry:
+            continue
+        # `git ls-files` emits paths relative to ``cwd``. We only want the
+        # top-level *.md files inside the nightowl/ directory itself; skip
+        # anything in a subdirectory.
+        if "/" in entry:
+            continue
+        files.append(path / entry)
+    return files
+
+
 def load_config(path: Path | None = None) -> Config:
     """Load nightowl config from a `nightowl/` directory.
 
@@ -158,6 +199,13 @@ def load_config(path: Path | None = None) -> Config:
       optional `output` (default "pr") and `fact_check` (default false). The
       markdown body is the task prompt. The filename stem becomes the task id.
     - Any other `_*.md` file is reserved and ignored.
+
+    Task files are enumerated via ``git ls-files`` so that stale or untracked
+    ``.md`` files lingering in the directory do not silently fire as tasks.
+    Past incidents (e.g. orphaned ``reddit-scout.md`` / ``x-thread.md`` files)
+    triggered runs because they were on disk but never committed. If git is
+    unavailable or the directory is not in a git working tree, falls back to
+    a disk glob with a WARN log.
     """
     if path is None:
         path = Path.cwd() / "nightowl"
@@ -170,9 +218,23 @@ def load_config(path: Path | None = None) -> Config:
 
     schedule = _load_schedule(schedule_path)
 
+    tracked = _git_tracked_task_files(path)
+    if tracked is None:
+        logger.warning(
+            "git ls-files unavailable in %s; falling back to disk glob. "
+            "Untracked .md files in this directory will be loaded as tasks.",
+            path,
+        )
+        candidates = sorted(path.glob("*.md"))
+    else:
+        candidates = sorted(tracked)
+
     tasks = []
-    for md in sorted(path.glob("*.md")):
+    for md in candidates:
         if md.name.startswith("_"):
+            continue
+        if not md.exists():
+            # `git ls-files` lists removed-but-staged paths too; skip those.
             continue
         tasks.append(_load_task(md))
 

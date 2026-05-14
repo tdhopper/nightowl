@@ -66,6 +66,34 @@ def record_task_result(
     _write_state(state)
 
 
+def record_task_disappeared(project_path: str, task_id: str) -> None:
+    """Mark a task as having disappeared from the loaded config.
+
+    Called when a task id exists in state (it ran before) but is no longer
+    present in the loaded task list — i.e. the markdown file was deleted,
+    renamed, or removed from git. Preserves the previous ``last_run`` so
+    ``status`` can still show when the task last fired and adds a
+    ``noticed_at`` timestamp for when the disappearance was first detected.
+
+    The entry is idempotent: re-recording a task that's already marked
+    disappeared preserves the original ``noticed_at`` and ``last_run``.
+    """
+    state = _read_state()
+    project = state.setdefault(project_path, {})
+    prev = project.get(task_id, {})
+    if prev.get("result") == "disappeared":
+        # Idempotent — keep the original noticed_at timestamp.
+        return
+    entry: dict = {
+        "result": "disappeared",
+        "noticed_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    if "last_run" in prev:
+        entry["last_run"] = prev["last_run"]
+    project[task_id] = entry
+    _write_state(state)
+
+
 def is_task_eligible(project_path: str, task_id: str, interval: timedelta) -> bool:
     """Check if enough time has elapsed since the last run.
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -14,6 +15,18 @@ from nightowl.state import record_task_started
 
 
 WORKTREE_ROOT = Path.home() / ".cache" / "nightowl" / "worktrees"
+TASK_STATE_ROOT = Path.home() / ".local" / "state" / "nightowl"
+
+
+def _task_state_dir(task_id: str) -> Path:
+    """Per-task state directory that survives worktree teardown.
+
+    The worktree is ``rmtree``-d at the end of every run, so anything a task
+    writes inside it is gone. Tasks that need to persist state across runs
+    (e.g. ``reddit-scout`` dedupe history) should read/write under
+    ``$NIGHTOWL_STATE_DIR`` instead, which points here.
+    """
+    return TASK_STATE_ROOT / task_id
 
 
 def _worktree_path(project_dir: Path, task_id: str) -> Path:
@@ -27,11 +40,13 @@ def _run(
     cwd: Path,
     logger: Logger,
     timeout: int | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     logger.debug(f"Running: {' '.join(cmd)}")
     try:
         result = subprocess.run(
-            cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
+            cmd, cwd=cwd, capture_output=True, text=True,
+            timeout=timeout, env=env,
         )
     except subprocess.TimeoutExpired:
         logger.error(f"Command timed out after {timeout}s: {' '.join(cmd)}")
@@ -179,6 +194,9 @@ def _run_fact_check_loop(
 ) -> None:
     """Run up to 3 rounds of Codex fact-checking, re-invoking Claude to fix issues."""
     max_iterations = 3
+    state_dir = _task_state_dir(task.id)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    claude_env = {**os.environ, "NIGHTOWL_STATE_DIR": str(state_dir)}
 
     for i in range(1, max_iterations + 1):
         logger.info(f"Fact-check iteration {i}/{max_iterations}")
@@ -210,7 +228,7 @@ def _run_fact_check_loop(
                 "--output-format", "json",
                 "--", fix_prompt,
             ],
-            cwd=project_dir, logger=logger, timeout=1800,
+            cwd=project_dir, logger=logger, timeout=1800, env=claude_env,
         )
 
     logger.warning(f"Fact-check did not pass after {max_iterations} iterations, proceeding anyway")
@@ -284,6 +302,11 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
         )
         pre_untracked_set = set(pre_untracked.stdout.strip().splitlines())
 
+        # Per-task state dir that survives worktree teardown.
+        state_dir = _task_state_dir(task.id)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        claude_env = {**os.environ, "NIGHTOWL_STATE_DIR": str(state_dir)}
+
         # Run claude (30 min timeout per task)
         logger.info("Running claude...")
         claude_cmd = [
@@ -295,7 +318,8 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
             "--", task.prompt,
         ]
         claude_result = _run(
-            claude_cmd, cwd=worktree_path, logger=logger, timeout=1800,
+            claude_cmd, cwd=worktree_path, logger=logger,
+            timeout=1800, env=claude_env,
         )
         logger.info(f"Claude exit code: {claude_result.returncode}")
 

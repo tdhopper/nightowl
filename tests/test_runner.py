@@ -249,6 +249,60 @@ class TestRunTaskRecordsStart:
             mock_started.assert_called_once_with(str(tmp_path), task.id)
 
 
+class TestRunTaskStateDir:
+    def test_nightowl_state_dir_passed_to_claude(self, tmp_path, logger, monkeypatch):
+        """The claude subprocess gets NIGHTOWL_STATE_DIR set to a per-task path
+        that survives worktree teardown — tasks like reddit-scout need this
+        for cross-run dedupe state."""
+        from nightowl import runner
+
+        task = _make_task()
+        worktree = tmp_path / "wt"
+        state_root = tmp_path / "task-state"
+        monkeypatch.setattr(runner, "TASK_STATE_ROOT", state_root)
+
+        with patch("nightowl.runner._run") as mock_run, \
+             patch("nightowl.runner._worktree_path", return_value=worktree):
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.stdout = ""
+            mock_run.return_value = proc
+
+            run_task(task, tmp_path, logger)
+
+            # Find the claude call and check its env kwarg.
+            claude_calls = [
+                c for c in mock_run.call_args_list
+                if c.args[0][0] == "claude"
+            ]
+            assert claude_calls, "expected at least one claude invocation"
+            env = claude_calls[0].kwargs.get("env")
+            assert env is not None, "claude must be invoked with explicit env"
+            expected_dir = state_root / task.id
+            assert env["NIGHTOWL_STATE_DIR"] == str(expected_dir)
+            # Sanity check: PATH passes through so claude can find its deps
+            assert "PATH" in env
+
+    def test_state_dir_is_created(self, tmp_path, logger, monkeypatch):
+        from nightowl import runner
+
+        task = _make_task()
+        worktree = tmp_path / "wt"
+        state_root = tmp_path / "task-state"
+        monkeypatch.setattr(runner, "TASK_STATE_ROOT", state_root)
+
+        with patch("nightowl.runner._run") as mock_run, \
+             patch("nightowl.runner._worktree_path", return_value=worktree):
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.stdout = ""
+            mock_run.return_value = proc
+
+            run_task(task, tmp_path, logger)
+
+            assert (state_root / task.id).is_dir()
+
+
 class TestRunTaskFactCheck:
     def test_fact_check_called_when_enabled(self, tmp_path, logger):
         task = _make_task(fact_check=True)
