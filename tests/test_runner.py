@@ -13,6 +13,7 @@ from nightowl.config import SkipIfOpenCheck, Task
 from nightowl.runner import (
     _check_skip_if_open,
     _get_working_diff,
+    _parse_claude_envelope,
     _run_codex_fact_check,
     _run_fact_check_loop,
     _run_skip_check,
@@ -307,6 +308,99 @@ class TestRunTaskStateDir:
             run_task(task, tmp_path, logger)
 
             assert (state_root / task.id).is_dir()
+
+
+class TestParseClaudeEnvelope:
+    def test_none_stdout(self):
+        result = _parse_claude_envelope(None)
+        assert result["claude_cost_usd"] is None
+        assert result["claude_input_tokens"] is None
+        assert result["claude_output_tokens"] is None
+        assert result["claude_cache_read_tokens"] is None
+
+    def test_empty_string(self):
+        result = _parse_claude_envelope("")
+        assert all(v is None for v in result.values())
+
+    def test_malformed_json(self):
+        result = _parse_claude_envelope("not json at all")
+        assert all(v is None for v in result.values())
+
+    def test_parses_full_envelope(self):
+        envelope = (
+            '{"type":"result","total_cost_usd":9.98,'
+            '"usage":{"input_tokens":156,"output_tokens":62085,'
+            '"cache_read_input_tokens":12174649}}'
+        )
+        result = _parse_claude_envelope(envelope)
+        assert result["claude_cost_usd"] == 9.98
+        assert result["claude_input_tokens"] == 156
+        assert result["claude_output_tokens"] == 62085
+        assert result["claude_cache_read_tokens"] == 12174649
+
+    def test_partial_envelope(self):
+        # If claude only emits the result key and no usage, we get back
+        # all Nones except cost (also None here).
+        result = _parse_claude_envelope('{"result": "ok"}')
+        assert all(v is None for v in result.values())
+
+
+class TestRunTaskReturnsObservability:
+    def test_success_carries_timing_and_envelope(self, tmp_path, logger):
+        task = _make_task()
+        worktree = tmp_path / "wt"
+        claude_envelope = (
+            '{"total_cost_usd":0.42,'
+            '"usage":{"input_tokens":100,"output_tokens":200,'
+            '"cache_read_input_tokens":300}}'
+        )
+        with patch("nightowl.runner._run") as mock_run, \
+             patch("nightowl.runner._worktree_path", return_value=worktree):
+            def fake_run(cmd, *a, **kw):
+                proc = MagicMock()
+                proc.returncode = 0
+                if cmd[0] == "claude" and "--output-format" in cmd:
+                    proc.stdout = claude_envelope
+                else:
+                    proc.stdout = ""
+                proc.stderr = ""
+                return proc
+            mock_run.side_effect = fake_run
+
+            result = run_task(task, tmp_path, logger)
+
+            assert result["task_id"] == task.id
+            assert result["result"] == "success"
+            assert "started_at" in result
+            assert "ended_at" in result
+            assert isinstance(result["duration_s"], int)
+            assert result["claude_cost_usd"] == 0.42
+            assert result["claude_input_tokens"] == 100
+            assert result["claude_output_tokens"] == 200
+            assert result["claude_cache_read_tokens"] == 300
+
+    def test_failure_carries_timing_and_null_envelope(self, tmp_path, logger):
+        task = _make_task()
+        worktree = tmp_path / "wt"
+        with patch("nightowl.runner._run") as mock_run, \
+             patch("nightowl.runner._worktree_path", return_value=worktree):
+            proc = MagicMock()
+            proc.returncode = 1
+            proc.stdout = ""
+            proc.stderr = "boom"
+            mock_run.return_value = proc
+
+            result = run_task(task, tmp_path, logger)
+
+            assert result["result"] == "failure"
+            assert result["error"]
+            assert result["task_id"] == task.id
+            assert "started_at" in result
+            assert "ended_at" in result
+            assert isinstance(result["duration_s"], int)
+            # Claude crashed before emitting JSON — envelope fields are None.
+            assert result["claude_cost_usd"] is None
+            assert result["claude_input_tokens"] is None
 
 
 class TestRunTaskFactCheck:
