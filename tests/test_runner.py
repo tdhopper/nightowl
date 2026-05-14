@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch, call
 
 import pytest
 
+from nightowl import state
 from nightowl.config import Task
 from nightowl.runner import (
     _get_working_diff,
@@ -16,6 +17,12 @@ from nightowl.runner import (
     _worktree_path,
     run_task,
 )
+
+
+@pytest.fixture(autouse=True)
+def tmp_state(tmp_path, monkeypatch):
+    """Isolate state writes from real ~/.config/nightowl/state.json."""
+    monkeypatch.setattr(state, "STATE_PATH", tmp_path / "state.json")
 
 
 def _make_task(fact_check: bool = False) -> Task:
@@ -213,6 +220,33 @@ class TestRunTaskUsesWorktree:
                     assert cmd[:2] != ["git", "reset"], (
                         f"Should not run `git reset ...` in project dir: {cmd}"
                     )
+
+
+class TestRunTaskRecordsStart:
+    def test_started_recorded_before_first_subprocess(self, tmp_path, logger):
+        """``record_task_started`` must run before any subprocess so a kill
+        between launchd fires and ``record_task_result`` still consumes the
+        interval. Without this, a crashed task re-fires every hour."""
+        task = _make_task()
+        worktree = tmp_path / "wt"
+
+        call_order: list[str] = []
+
+        with patch("nightowl.runner._run") as mock_run, \
+             patch("nightowl.runner._worktree_path", return_value=worktree), \
+             patch("nightowl.runner.record_task_started") as mock_started:
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.stdout = ""
+            mock_run.side_effect = lambda *a, **kw: (call_order.append("_run"), proc)[1]
+            mock_started.side_effect = lambda *a, **kw: call_order.append("started")
+
+            run_task(task, tmp_path, logger)
+
+            assert call_order.index("started") < call_order.index("_run"), (
+                f"record_task_started must run before any subprocess: {call_order}"
+            )
+            mock_started.assert_called_once_with(str(tmp_path), task.id)
 
 
 class TestRunTaskFactCheck:
