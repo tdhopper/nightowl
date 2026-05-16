@@ -12,6 +12,7 @@ from nightowl import state
 from nightowl.config import SkipIfOpenCheck, Task
 from nightowl.runner import (
     _check_skip_if_open,
+    _generate_pr_metadata,
     _get_working_diff,
     _parse_claude_envelope,
     _run_codex_fact_check,
@@ -308,6 +309,69 @@ class TestRunTaskStateDir:
             run_task(task, tmp_path, logger)
 
             assert (state_root / task.id).is_dir()
+
+
+class TestGeneratePrMetadata:
+    """`_generate_pr_metadata` honors task-provided overrides from the state
+    dir so structured-content tasks (handbook-article and friends) can supply
+    their own PR body instead of getting a generic 2-5 sentence summary."""
+
+    def test_body_override_used_when_present(self, tmp_path, logger, monkeypatch):
+        from nightowl import runner
+
+        state_root = tmp_path / "task-state"
+        task = _make_task()
+        state_dir = state_root / task.id
+        state_dir.mkdir(parents=True)
+        (state_dir / "pr_body.md").write_text("## Custom\n\nVerified body.")
+        monkeypatch.setattr(runner, "TASK_STATE_ROOT", state_root)
+
+        title, body = _generate_pr_metadata(task, tmp_path, logger)
+
+        assert "Verified body." in body
+        assert body.endswith("*Automated by nightowl*")
+        assert title == task.name
+        # Override files are consumed so a subsequent run starts fresh.
+        assert not (state_dir / "pr_body.md").exists()
+
+    def test_title_override_used_when_present(self, tmp_path, logger, monkeypatch):
+        from nightowl import runner
+
+        state_root = tmp_path / "task-state"
+        task = _make_task()
+        state_dir = state_root / task.id
+        state_dir.mkdir(parents=True)
+        (state_dir / "pr_body.md").write_text("body")
+        (state_dir / "pr_title.txt").write_text("Add custom title\n")
+        monkeypatch.setattr(runner, "TASK_STATE_ROOT", state_root)
+
+        title, body = _generate_pr_metadata(task, tmp_path, logger)
+
+        assert title == "Add custom title"
+        assert not (state_dir / "pr_title.txt").exists()
+
+    def test_falls_back_to_claude_when_no_override(self, tmp_path, logger, monkeypatch):
+        from nightowl import runner
+
+        state_root = tmp_path / "task-state"
+        (state_root / "test-task").mkdir(parents=True)
+        task = _make_task()
+        monkeypatch.setattr(runner, "TASK_STATE_ROOT", state_root)
+
+        with patch("nightowl.runner._run") as mock_run:
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.stdout = "TITLE: Generated title\nBODY: Generated body"
+            mock_run.return_value = proc
+
+            title, body = _generate_pr_metadata(task, tmp_path, logger)
+
+            assert title == "Generated title"
+            assert "Generated body" in body
+            # Claude was actually invoked.
+            assert any(
+                c.args[0][0] == "claude" for c in mock_run.call_args_list
+            )
 
 
 class TestParseClaudeEnvelope:

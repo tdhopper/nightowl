@@ -61,7 +61,33 @@ def _run(
 def _generate_pr_metadata(
     task: Task, project_dir: Path, logger: Logger,
 ) -> tuple[str, str]:
-    """Use Claude to generate an informative PR title and body from the diff."""
+    """Pick a PR title and body for the task's branch.
+
+    If the task wrote its own title/body to its state dir
+    (``$NIGHTOWL_STATE_DIR/pr_title.txt`` and ``$NIGHTOWL_STATE_DIR/pr_body.md``),
+    use those. Tasks that produce structured PR content (preview links,
+    verified numbers, social copy, etc.) can compose the full body and
+    bypass the generic generator. The override files are consumed after
+    reading so a subsequent run starts clean.
+
+    Otherwise, fall back to asking Claude to summarize the diff in 2-5
+    sentences.
+    """
+    state_dir = _task_state_dir(task.id)
+    title_override = state_dir / "pr_title.txt"
+    body_override = state_dir / "pr_body.md"
+
+    if body_override.is_file():
+        logger.info(f"Using task-provided PR body: {body_override}")
+        body = body_override.read_text().rstrip() + "\n\n---\n*Automated by nightowl*"
+        if title_override.is_file():
+            title = title_override.read_text().strip().splitlines()[0]
+            title_override.unlink()
+        else:
+            title = task.name
+        body_override.unlink()
+        return title, body
+
     diff_result = _run(
         ["git", "diff", "origin/main", "--stat"],
         cwd=project_dir, logger=logger,
