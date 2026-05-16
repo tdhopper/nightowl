@@ -224,9 +224,9 @@ class TestStatusStale:
 
 
 class TestCliRunWiresObservability:
-    """``nightowl run`` must append each run to runs.jsonl and email a summary."""
+    """``nightowl run`` must append each run to runs.jsonl and push on failure."""
 
-    def test_writes_runs_jsonl_and_emails_summary(self, tmp_path, monkeypatch):
+    def test_writes_runs_jsonl_and_pushes_on_failure(self, tmp_path, monkeypatch):
         from nightowl import runs as runs_mod
         from nightowl import state as state_mod
 
@@ -253,7 +253,7 @@ class TestCliRunWiresObservability:
             with patch(
                 "nightowl.cli.run_task", return_value=fake_result,
             ) as mock_run_task, \
-                 patch("nightowl.cli.send_summary_email") as mock_email:
+                 patch("nightowl.cli.send_failure_notification") as mock_push:
                 result = runner.invoke(main, ["run", "--task", "test-task"])
 
             assert result.exit_code == 0, result.output
@@ -265,13 +265,14 @@ class TestCliRunWiresObservability:
             assert runs_for_proj[0]["task_id"] == "test-task"
             assert runs_for_proj[0]["pr_url"] == "https://github.com/x/y/pull/1"
 
-            # Summary email was attempted with the run record
-            mock_email.assert_called_once()
-            sent_records = mock_email.call_args[0][0]
+            # send_failure_notification is invoked unconditionally — it
+            # decides internally whether there's anything to push.
+            mock_push.assert_called_once()
+            sent_records = mock_push.call_args[0][0]
             assert sent_records == [fake_result]
 
-    def test_no_email_when_no_tasks_eligible(self, tmp_path, monkeypatch):
-        """Zero-task runs don't email — that'd be daily spam."""
+    def test_no_push_when_no_tasks_eligible(self, tmp_path, monkeypatch):
+        """Zero-task runs don't reach the notification call site."""
         from nightowl import runs as runs_mod
         from nightowl import state as state_mod
 
@@ -283,16 +284,16 @@ class TestCliRunWiresObservability:
             _write_project()
             with patch(
                 "nightowl.cli.is_task_eligible", return_value=False,
-            ), patch("nightowl.cli.send_summary_email") as mock_email, \
+            ), patch("nightowl.cli.send_failure_notification") as mock_push, \
                  patch("nightowl.cli.run_task") as mock_run_task:
                 result = runner.invoke(main, ["run"])
 
             assert result.exit_code == 0, result.output
             mock_run_task.assert_not_called()
-            # Early return short-circuits before the email call site.
-            mock_email.assert_not_called()
+            # Early return short-circuits before the notification call site.
+            mock_push.assert_not_called()
 
-    def test_email_called_even_when_task_fails(self, tmp_path, monkeypatch):
+    def test_push_called_when_task_fails(self, tmp_path, monkeypatch):
         from nightowl import runs as runs_mod
         from nightowl import state as state_mod
 
@@ -317,9 +318,9 @@ class TestCliRunWiresObservability:
             }
             with patch(
                 "nightowl.cli.run_task", return_value=fake_result,
-            ), patch("nightowl.cli.send_summary_email") as mock_email:
+            ), patch("nightowl.cli.send_failure_notification") as mock_push:
                 result = runner.invoke(main, ["run", "--task", "test-task"])
 
-            # Failed task -> exit 1, but email still went out.
+            # Failed task -> exit 1, and push was attempted.
             assert result.exit_code == 1
-            mock_email.assert_called_once()
+            mock_push.assert_called_once()

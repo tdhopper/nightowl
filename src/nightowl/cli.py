@@ -7,8 +7,8 @@ from pathlib import Path
 import click
 
 from nightowl.config import WEEKDAY_DISPLAY, load_config
-from nightowl.email import send_summary_email
 from nightowl.logging import setup_logging
+from nightowl.pushover import send_failure_notification
 from nightowl.runner import run_task
 from nightowl.runs import append_run
 from nightowl.state import (
@@ -107,12 +107,11 @@ def run(task_id: str | None, dry_run: bool):
             if result["result"] == "failure":
                 any_failed = True
     finally:
-        # Email the summary even if the loop is interrupted, so a crash
-        # mid-run still surfaces what did and didn't fire. ``run_records``
-        # may be empty if the first task killed the process before
-        # returning a result — ``send_summary_email`` no-ops on empty
-        # input so we never spam Tim for a zero-tasks run.
-        send_summary_email(run_records, logger, project_dir=project_path)
+        # Push to Pushover only if at least one task failed. Successful
+        # runs are silent — the PR list in GitHub is signal enough.
+        # Wrapped in the finally so a crash mid-loop that left a partial
+        # ``run_records`` with a failure still alerts.
+        send_failure_notification(run_records, logger, project_dir=project_path)
 
     if any_failed:
         sys.exit(1)
