@@ -56,7 +56,7 @@ uvx pre-commit install
 To upgrade `Makefile.uv`, re-run the install with a newer tag:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/python-developer-tooling-handbook/makefile.uv/v0.3.0/Makefile.uv -o Makefile.uv
+curl -sSL https://raw.githubusercontent.com/python-developer-tooling-handbook/makefile.uv/v0.4.0/Makefile.uv -o Makefile.uv
 ```
 
 ## Getting started

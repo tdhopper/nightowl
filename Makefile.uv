@@ -7,7 +7,10 @@ DEP_VARIANTS    ?=
 DEP_MODE        ?= extra
 PYTEST          ?= pytest
 FORMAT          ?= ruff format
+FORMAT_CHECK    ?= ruff format --check
 TYPECHECK       ?= mypy
+PRE_COMMIT      ?= uvx pre-commit
+COVERAGE        ?= coverage
 UV_VENV_PREFIX  ?= .venv-
 UV_SYNC_FLAGS   ?=
 UV_RUN_FLAGS    ?=
@@ -22,11 +25,26 @@ LINT            ?= ruff check
 
 # Pattern rules use FORCE as a prereq so a file sharing the target name
 # (e.g. accidentally `touch test-py3.12`) can't fool Make into skipping it.
-.PHONY: sync test test-all matrix lint format typecheck clean help FORCE
+.PHONY: sync dev pre-commit-install test test-all matrix lint format format-check typecheck check coverage coverage-html clean help FORCE
 FORCE:
 
 sync:
 	uv sync $(UV_SYNC_FLAGS)
+
+# `pre-commit-install` is a no-op when no .pre-commit-config.yaml is
+# present so `dev` works uniformly for projects with and without
+# pre-commit configured.
+pre-commit-install:
+	@if [ -f .pre-commit-config.yaml ]; then \
+		$(PRE_COMMIT) install; \
+	else \
+		echo "pre-commit-install: no .pre-commit-config.yaml — skipping"; \
+	fi
+
+# One-shot setup for new contributors. Override DEV_DEPS to skip steps
+# or chain in project-local targets (`DEV_DEPS += seed-db`).
+DEV_DEPS ?= sync pre-commit-install
+dev: $(DEV_DEPS)
 
 test:
 	uv run $(UV_RUN_FLAGS) $(PYTEST)
@@ -52,24 +70,51 @@ lint:
 format:
 	uv run $(UV_RUN_FLAGS) $(FORMAT)
 
+format-check:
+	uv run $(UV_RUN_FLAGS) $(FORMAT_CHECK)
+
 typecheck:
 	uv run $(UV_RUN_FLAGS) $(TYPECHECK)
+
+# `check` is the canonical "verify before push" / "run in CI" entry point.
+# Order matters: lint and format-check are cheap and catch the most common
+# mistakes, so they run before the slower typecheck and test steps.
+# Override CHECK_DEPS before `include Makefile.uv` to customize the sequence.
+CHECK_DEPS ?= lint format-check typecheck test
+check: $(CHECK_DEPS)
+
+# Run pytest under coverage.py and emit a terminal report. The handbook's
+# recommended path (uv add --dev coverage; coverage run -m pytest) — no
+# pytest-cov plugin required.
+coverage:
+	uv run $(UV_RUN_FLAGS) $(COVERAGE) run -m $(PYTEST)
+	uv run $(UV_RUN_FLAGS) $(COVERAGE) report
+
+coverage-html:
+	uv run $(UV_RUN_FLAGS) $(COVERAGE) run -m $(PYTEST)
+	uv run $(UV_RUN_FLAGS) $(COVERAGE) html
 
 # Empty UV_VENV_PREFIX would make "$(UV_VENV_PREFIX)"* expand to * and wipe
 # cwd. -- stops rm from reading any glob match as a flag.
 clean:
 	@test -n "$(UV_VENV_PREFIX)" || { echo "clean: UV_VENV_PREFIX is empty — refusing." >&2; exit 1; }
-	rm -rf -- .venv "$(UV_VENV_PREFIX)"* dist *.egg-info .pytest_cache
+	rm -rf -- .venv "$(UV_VENV_PREFIX)"* dist *.egg-info .pytest_cache .coverage htmlcov
 
 help:
 	@echo "Makefile.uv targets:"
 	@echo "  sync                    uv sync"
+	@echo "  dev                     one-shot contributor setup (\$$(DEV_DEPS))"
+	@echo "  pre-commit-install      install git hooks if .pre-commit-config.yaml exists"
 	@echo "  test                    uv run \$$(PYTEST)"
 	@echo "  test-py<VER>            run \$$(PYTEST) on Python <VER> in a dedicated venv"
 	@echo "  test-all                test-py<VER> for each version in PYTHON_VERSIONS"
 	@echo "  matrix                  Python × DEP_VARIANTS cells (DEP_VARIANTS empty = no-op)"
 	@echo "  test-cell-py<VER>-<VAR> run one matrix cell"
 	@echo "  lint / format / typecheck  run \$$(LINT) / \$$(FORMAT) / \$$(TYPECHECK)"
+	@echo "  format-check            run \$$(FORMAT_CHECK) (non-mutating, CI-friendly)"
+	@echo "  check                   lint + format-check + typecheck + test"
+	@echo "  coverage                run \$$(PYTEST) under \$$(COVERAGE) and print a report"
+	@echo "  coverage-html           run \$$(PYTEST) under \$$(COVERAGE) and write htmlcov/"
 	@echo "  clean                   remove venvs and build artifacts"
 	@echo ""
 	@echo "Variables (set before 'include Makefile.uv' to override):"
@@ -79,7 +124,12 @@ help:
 	@echo "  PYTEST          = $(PYTEST)"
 	@echo "  LINT            = $(LINT)"
 	@echo "  FORMAT          = $(FORMAT)"
+	@echo "  FORMAT_CHECK    = $(FORMAT_CHECK)"
 	@echo "  TYPECHECK       = $(TYPECHECK)"
+	@echo "  PRE_COMMIT      = $(PRE_COMMIT)"
+	@echo "  DEV_DEPS        = $(DEV_DEPS)"
+	@echo "  CHECK_DEPS      = $(CHECK_DEPS)"
+	@echo "  COVERAGE        = $(COVERAGE)"
 	@echo "  UV_VENV_PREFIX  = $(UV_VENV_PREFIX)"
 	@echo "  UV_SYNC_FLAGS   = $(UV_SYNC_FLAGS)"
 	@echo "  UV_RUN_FLAGS    = $(UV_RUN_FLAGS)"
