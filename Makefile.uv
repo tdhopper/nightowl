@@ -38,7 +38,7 @@ pre-commit-install:
 	@if [ -f .pre-commit-config.yaml ]; then \
 		$(PRE_COMMIT) install; \
 	else \
-		echo "pre-commit-install: no .pre-commit-config.yaml — skipping"; \
+		echo "pre-commit-install: no .pre-commit-config.yaml found, skipping"; \
 	fi
 
 # One-shot setup for new contributors. Override DEV_DEPS to skip steps
@@ -97,7 +97,7 @@ coverage-html:
 # Empty UV_VENV_PREFIX would make "$(UV_VENV_PREFIX)"* expand to * and wipe
 # cwd. -- stops rm from reading any glob match as a flag.
 clean:
-	@test -n "$(UV_VENV_PREFIX)" || { echo "clean: UV_VENV_PREFIX is empty — refusing." >&2; exit 1; }
+	@test -n "$(UV_VENV_PREFIX)" || { echo "clean: UV_VENV_PREFIX is empty, refusing." >&2; exit 1; }
 	rm -rf -- .venv "$(UV_VENV_PREFIX)"* dist *.egg-info .pytest_cache .coverage htmlcov
 
 help:
