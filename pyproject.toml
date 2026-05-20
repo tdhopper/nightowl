@@ -55,6 +55,9 @@ python-version = "3.12"
 [tool.ruff]
 line-length = 88
 target-version = "py312"
+# Makefile.uv stashes per-version venvs at .venv-<VER>; ruff's default excludes
+# only cover .venv.
+extend-exclude = [".venv-*"]
 
 [tool.ruff.lint]
 select = [
