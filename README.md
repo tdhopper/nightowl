@@ -28,13 +28,17 @@ This project uses [uv](https://docs.astral.sh/uv/) for packaging and environment
 A pinned copy of [Makefile.uv](https://github.com/python-developer-tooling-handbook/makefile.uv) ships in the repo so common workflows have one-word shortcuts:
 
 ```bash
+make dev          # one-shot bootstrap: uv sync + pre-commit install
+make check        # lint + format-check + typecheck + test (what CI runs)
 make sync         # uv sync --dev
 make lint         # ruff check
-make format       # ruff format
+make format       # ruff format (mutates files)
+make format-check # ruff format --check (CI variant)
 make typecheck    # pyrefly check
 make test         # pytest in the default venv
 make test-py3.12  # pytest in a dedicated 3.12 venv at .venv-3.12
 make test-all     # test-py<VER> for every entry in PYTHON_VERSIONS (3.12 / 3.13 / 3.14)
+make coverage     # pytest under coverage.py + terminal report
 make clean        # remove .venv*, dist, caches
 ```
 
