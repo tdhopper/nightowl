@@ -578,22 +578,41 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
 
             # Create PR if output is pr
             if task.output == "pr":
-                pr_title, pr_body = _generate_pr_metadata(
-                    task, worktree_path, logger,
-                )
-                result = _run(
+                # If the agent already opened a PR for this branch (some task
+                # prompts call `gh pr create` themselves), adopt it instead of
+                # firing a duplicate `gh pr create` that would fail with
+                # "a pull request for branch ... already exists".
+                existing = _run(
                     [
-                        "gh", "pr", "create",
-                        "--title", pr_title,
-                        "--body", pr_body,
+                        "gh", "pr", "list",
+                        "--head", branch,
+                        "--state", "open",
+                        "--json", "url",
+                        "--jq", ".[0].url // empty",
                     ],
                     cwd=worktree_path,
                     logger=logger,
                 )
-                if result.returncode != 0:
-                    raise RuntimeError(f"gh pr create failed: {result.stderr}")
-                pr_url = result.stdout.strip()
-                logger.info(f"PR created: {pr_url}")
+                if existing.returncode == 0 and existing.stdout.strip():
+                    pr_url = existing.stdout.strip()
+                    logger.info(f"PR already opened by task: {pr_url}")
+                else:
+                    pr_title, pr_body = _generate_pr_metadata(
+                        task, worktree_path, logger,
+                    )
+                    result = _run(
+                        [
+                            "gh", "pr", "create",
+                            "--title", pr_title,
+                            "--body", pr_body,
+                        ],
+                        cwd=worktree_path,
+                        logger=logger,
+                    )
+                    if result.returncode != 0:
+                        raise RuntimeError(f"gh pr create failed: {result.stderr}")
+                    pr_url = result.stdout.strip()
+                    logger.info(f"PR created: {pr_url}")
         elif not has_changes:
             logger.info("No changes made by claude.")
 
