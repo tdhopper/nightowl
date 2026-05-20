@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import plistlib
 import os
+import plistlib
 import random
 import re
 import shutil
@@ -59,7 +59,9 @@ def generate_plist(
         start_calendar_interval = {"Hour": hour, "Minute": minute}
 
     # Resolve full path so launchd can find the binary (its PATH is minimal)
-    nightowl_bin = shutil.which("nightowl") or str(Path(sys.prefix) / "bin" / "nightowl")
+    nightowl_bin = shutil.which("nightowl") or str(
+        Path(sys.prefix) / "bin" / "nightowl"
+    )
 
     # Capture current PATH so launchd subprocesses (git, claude, gh) are findable
     path = os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
@@ -74,10 +76,20 @@ def generate_plist(
         },
         "StartCalendarInterval": start_calendar_interval,
         "StandardOutPath": str(
-            Path.home() / ".local" / "share" / "nightowl" / "logs" / f"{slug}-stdout.log"
+            Path.home()
+            / ".local"
+            / "share"
+            / "nightowl"
+            / "logs"
+            / f"{slug}-stdout.log"
         ),
         "StandardErrorPath": str(
-            Path.home() / ".local" / "share" / "nightowl" / "logs" / f"{slug}-stderr.log"
+            Path.home()
+            / ".local"
+            / "share"
+            / "nightowl"
+            / "logs"
+            / f"{slug}-stderr.log"
         ),
     }
     return plist

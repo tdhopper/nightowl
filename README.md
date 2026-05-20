@@ -16,10 +16,36 @@ macOS scheduling is handled by a launchd plist that runs `nightowl run` at a ran
 ## Installation
 
 ```bash
-pip install nightowl
+uv tool install nightowl
 ```
 
 Requires Python 3.12+, a working `claude` CLI, and `gh` (GitHub CLI) for PR creation.
+
+## Development
+
+This project uses [uv](https://docs.astral.sh/uv/) for packaging and environment management, [Ruff](https://docs.astral.sh/ruff/) for linting and formatting, [Pyrefly](https://pyrefly.org/) for type checking, [pytest](https://docs.pytest.org/) for testing, and [coverage.py](https://coverage.readthedocs.io/) for coverage. CI (`.github/workflows/ci.yml`) runs the same checks across Python 3.12, 3.13, and 3.14.
+
+```bash
+# Sync the locked dev environment
+uv sync --locked --dev
+
+# Run the test suite
+uv run pytest
+
+# Lint and format
+uv run ruff check .
+uv run ruff format .
+
+# Type check
+uv run pyrefly check
+
+# Coverage
+uv run coverage run -m pytest
+uv run coverage report
+
+# Install pre-commit hooks (runs ruff + standard hygiene checks on commit)
+uvx pre-commit install
+```
 
 ## Getting started
 

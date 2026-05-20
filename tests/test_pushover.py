@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import email.message
 import io
 import json
 import logging
@@ -52,14 +53,18 @@ class TestBuildFailureMessage:
     def test_title_includes_project_basename(self):
         runs = [{"task_id": "a", "result": "failure", "error": "boom"}]
         title, _ = pushover_mod.build_failure_message(
-            runs, project_dir="/Users/tim/repos/handbook",
+            runs,
+            project_dir="/Users/tim/repos/handbook",
         )
         assert title == "nightowl: 1 task failed in handbook"
 
     def test_message_lists_each_failure_first_line_only(self):
         runs = [
-            {"task_id": "content-gap", "result": "failure",
-             "error": "ENOTFOUND api.reddit.com\nstack trace line 2"},
+            {
+                "task_id": "content-gap",
+                "result": "failure",
+                "error": "ENOTFOUND api.reddit.com\nstack trace line 2",
+            },
             {"task_id": "reddit-scout", "result": "failure", "error": "timeout"},
         ]
         _, message = pushover_mod.build_failure_message(runs)
@@ -81,7 +86,8 @@ class TestSendFailureNotification:
         user_path.write_text("u")
         with patch("nightowl.pushover.urllib.request.urlopen") as mock_open:
             sent = pushover_mod.send_failure_notification(
-                [{"task_id": "a", "result": "success"}], logger,
+                [{"task_id": "a", "result": "success"}],
+                logger,
             )
             assert sent is False
             mock_open.assert_not_called()
@@ -98,7 +104,8 @@ class TestSendFailureNotification:
         assert not user_path.exists()
         with patch("nightowl.pushover.urllib.request.urlopen") as mock_open:
             sent = pushover_mod.send_failure_notification(
-                [{"task_id": "a", "result": "failure", "error": "boom"}], logger,
+                [{"task_id": "a", "result": "failure", "error": "boom"}],
+                logger,
             )
             assert sent is False
             mock_open.assert_not_called()
@@ -109,7 +116,8 @@ class TestSendFailureNotification:
         # user_path missing
         with patch("nightowl.pushover.urllib.request.urlopen") as mock_open:
             sent = pushover_mod.send_failure_notification(
-                [{"task_id": "a", "result": "failure", "error": "boom"}], logger,
+                [{"task_id": "a", "result": "failure", "error": "boom"}],
+                logger,
             )
             assert sent is False
             mock_open.assert_not_called()
@@ -120,7 +128,8 @@ class TestSendFailureNotification:
         user_path.write_text("u")
         with patch("nightowl.pushover.urllib.request.urlopen") as mock_open:
             sent = pushover_mod.send_failure_notification(
-                [{"task_id": "a", "result": "failure", "error": "boom"}], logger,
+                [{"task_id": "a", "result": "failure", "error": "boom"}],
+                logger,
             )
             assert sent is False
             mock_open.assert_not_called()
@@ -166,10 +175,12 @@ class TestSendFailureNotification:
         resp.__enter__.return_value = resp
         resp.__exit__.return_value = False
         with patch(
-            "nightowl.pushover.urllib.request.urlopen", return_value=resp,
+            "nightowl.pushover.urllib.request.urlopen",
+            return_value=resp,
         ):
             sent = pushover_mod.send_failure_notification(
-                [{"task_id": "a", "result": "failure", "error": "boom"}], logger,
+                [{"task_id": "a", "result": "failure", "error": "boom"}],
+                logger,
             )
             assert sent is False
 
@@ -185,10 +196,12 @@ class TestSendFailureNotification:
         resp.__enter__.return_value = resp
         resp.__exit__.return_value = False
         with patch(
-            "nightowl.pushover.urllib.request.urlopen", return_value=resp,
+            "nightowl.pushover.urllib.request.urlopen",
+            return_value=resp,
         ):
             sent = pushover_mod.send_failure_notification(
-                [{"task_id": "a", "result": "failure", "error": "boom"}], logger,
+                [{"task_id": "a", "result": "failure", "error": "boom"}],
+                logger,
             )
             assert sent is False
 
@@ -200,14 +213,16 @@ class TestSendFailureNotification:
             url=pushover_mod.PUSHOVER_API_URL,
             code=400,
             msg="Bad Request",
-            hdrs=None,
+            hdrs=email.message.Message(),
             fp=io.BytesIO(b'{"status":0}'),
         )
         with patch(
-            "nightowl.pushover.urllib.request.urlopen", side_effect=err,
+            "nightowl.pushover.urllib.request.urlopen",
+            side_effect=err,
         ):
             sent = pushover_mod.send_failure_notification(
-                [{"task_id": "a", "result": "failure", "error": "boom"}], logger,
+                [{"task_id": "a", "result": "failure", "error": "boom"}],
+                logger,
             )
             assert sent is False
 
@@ -220,6 +235,7 @@ class TestSendFailureNotification:
             side_effect=urllib.error.URLError("dns failure"),
         ):
             sent = pushover_mod.send_failure_notification(
-                [{"task_id": "a", "result": "failure", "error": "boom"}], logger,
+                [{"task_id": "a", "result": "failure", "error": "boom"}],
+                logger,
             )
             assert sent is False

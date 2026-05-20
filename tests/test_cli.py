@@ -23,6 +23,7 @@ def _isolate_nightowl_logger():
     teardown, those handlers persist across tests and emit into Click's
     captured stdout for unrelated invocations like `status`."""
     import logging as _logging
+
     lg = _logging.getLogger("nightowl")
     for h in list(lg.handlers):
         lg.removeHandler(h)
@@ -31,28 +32,13 @@ def _isolate_nightowl_logger():
         lg.removeHandler(h)
 
 
-SCHEDULE = (
-    "---\n"
-    'window_start: "22:00"\n'
-    'window_end: "06:00"\n'
-    "---\n"
-)
+SCHEDULE = '---\nwindow_start: "22:00"\nwindow_end: "06:00"\n---\n'
 
 SKIP_SCHEDULE = (
-    "---\n"
-    'window_start: "22:00"\n'
-    'window_end: "06:00"\n'
-    "skip_weekdays: [Sunday]\n"
-    "---\n"
+    '---\nwindow_start: "22:00"\nwindow_end: "06:00"\nskip_weekdays: [Sunday]\n---\n'
 )
 
-TASK = (
-    "---\n"
-    'name: "Test Task"\n'
-    "interval: 24h\n"
-    "---\n"
-    "Do something\n"
-)
+TASK = '---\nname: "Test Task"\ninterval: 24h\n---\nDo something\n'
 
 
 def _write_project(schedule: str = SCHEDULE, task_id: str = "test-task") -> None:
@@ -143,6 +129,7 @@ class TestDisappearedDetection:
 
             assert result.exit_code == 0
             ghost = state.get_task_state(project_path, "ghost")
+            assert ghost is not None
             assert ghost["result"] == "disappeared"
             assert "noticed_at" in ghost
 
@@ -186,11 +173,9 @@ class TestStatusStale:
             project_path = str(Path.cwd())
             # Interval is 24h; record a run from 3 days ago (> 2 * 24h)
             old = (datetime.now() - timedelta(days=3)).isoformat(timespec="seconds")
-            state._write_state({
-                project_path: {
-                    "test-task": {"last_run": old, "result": "success"}
-                }
-            })
+            state._write_state(
+                {project_path: {"test-task": {"last_run": old, "result": "success"}}}
+            )
             result = runner.invoke(main, ["status", "--stale"])
             assert result.exit_code == 1
             assert "test-task" in result.output
@@ -213,11 +198,16 @@ class TestStatusStale:
         with runner.isolated_filesystem(temp_dir=tmp_path):
             _write_project()
             project_path = str(Path.cwd())
-            state._write_state({
-                project_path: {
-                    "test-task": {"result": "disappeared", "noticed_at": "2026-01-01T00:00:00"},
+            state._write_state(
+                {
+                    project_path: {
+                        "test-task": {
+                            "result": "disappeared",
+                            "noticed_at": "2026-01-01T00:00:00",
+                        },
+                    }
                 }
-            })
+            )
             result = runner.invoke(main, ["status", "--stale"])
             assert result.exit_code == 1
             assert "test-task" in result.output
@@ -250,10 +240,13 @@ class TestCliRunWiresObservability:
                 "claude_output_tokens": 20,
                 "claude_cache_read_tokens": 30,
             }
-            with patch(
-                "nightowl.cli.run_task", return_value=fake_result,
-            ) as mock_run_task, \
-                 patch("nightowl.cli.send_failure_notification") as mock_push:
+            with (
+                patch(
+                    "nightowl.cli.run_task",
+                    return_value=fake_result,
+                ) as mock_run_task,
+                patch("nightowl.cli.send_failure_notification") as mock_push,
+            ):
                 result = runner.invoke(main, ["run", "--task", "test-task"])
 
             assert result.exit_code == 0, result.output
@@ -282,10 +275,14 @@ class TestCliRunWiresObservability:
         runner = CliRunner()
         with runner.isolated_filesystem(temp_dir=tmp_path):
             _write_project()
-            with patch(
-                "nightowl.cli.is_task_eligible", return_value=False,
-            ), patch("nightowl.cli.send_failure_notification") as mock_push, \
-                 patch("nightowl.cli.run_task") as mock_run_task:
+            with (
+                patch(
+                    "nightowl.cli.is_task_eligible",
+                    return_value=False,
+                ),
+                patch("nightowl.cli.send_failure_notification") as mock_push,
+                patch("nightowl.cli.run_task") as mock_run_task,
+            ):
                 result = runner.invoke(main, ["run"])
 
             assert result.exit_code == 0, result.output
@@ -316,9 +313,13 @@ class TestCliRunWiresObservability:
                 "claude_output_tokens": None,
                 "claude_cache_read_tokens": None,
             }
-            with patch(
-                "nightowl.cli.run_task", return_value=fake_result,
-            ), patch("nightowl.cli.send_failure_notification") as mock_push:
+            with (
+                patch(
+                    "nightowl.cli.run_task",
+                    return_value=fake_result,
+                ),
+                patch("nightowl.cli.send_failure_notification") as mock_push,
+            ):
                 result = runner.invoke(main, ["run", "--task", "test-task"])
 
             # Failed task -> exit 1, and push was attempted.

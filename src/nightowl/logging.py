@@ -21,13 +21,15 @@ class _StdoutStreamHandler(logging.StreamHandler):
     def __init__(self) -> None:
         super().__init__(stream=sys.stdout)
 
+    # Override the parent's `stream` attribute with a property so each emit
+    # resolves the current sys.stdout instead of the one captured at __init__.
     @property
+    # pyrefly: ignore [bad-override]
     def stream(self):
         return sys.stdout
 
     @stream.setter
     def stream(self, value):
-        # Ignore writes from the base class; we resolve dynamically.
         pass
 
 

@@ -6,14 +6,34 @@ readme = "README.md"
 authors = [
     { name = "Tim Hopper", email = "tim@tdhopper.com" }
 ]
+license = "MIT"
 requires-python = ">=3.12"
+keywords = ["claude", "claude-code", "automation", "scheduler", "cli"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development",
+    "Topic :: Utilities",
+]
 dependencies = [
-    "pyyaml",
     "click",
+    "pyyaml",
 ]
 
 [project.scripts]
 nightowl = "nightowl.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/tdhopper/nightowl"
+Repository = "https://github.com/tdhopper/nightowl"
+Issues = "https://github.com/tdhopper/nightowl/issues"
 
 [build-system]
 requires = ["uv_build>=0.8.13,<0.9.0"]
@@ -21,5 +41,53 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "coverage",
+    "pre-commit",
+    "pyrefly>=1.0.0",
     "pytest",
+    "ruff",
+]
+
+[tool.pyrefly]
+project-includes = ["src", "tests"]
+python-version = "3.12"
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line length (handled by formatter)
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = ["--strict-markers", "--strict-config"]
+
+[tool.coverage.run]
+source = ["nightowl"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
 ]

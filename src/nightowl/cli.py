@@ -11,13 +11,14 @@ from nightowl.logging import setup_logging
 from nightowl.pushover import send_failure_notification
 from nightowl.runner import run_task
 from nightowl.runs import append_run
+from nightowl.scheduler import install as scheduler_install
+from nightowl.scheduler import uninstall as scheduler_uninstall
 from nightowl.state import (
     get_all_task_states,
     is_task_eligible,
     record_task_disappeared,
     record_task_result,
 )
-from nightowl.scheduler import install as scheduler_install, uninstall as scheduler_uninstall
 
 
 @click.group()
@@ -27,7 +28,12 @@ def main():
 
 
 @main.command()
-@click.option("--task", "task_id", default=None, help="Run a single task by id, skipping interval check.")
+@click.option(
+    "--task",
+    "task_id",
+    default=None,
+    help="Run a single task by id, skipping interval check.",
+)
 @click.option("--dry-run", is_flag=True, help="Show eligible tasks without executing.")
 def run(task_id: str | None, dry_run: bool):
     """Run eligible tasks."""
@@ -70,8 +76,7 @@ def run(task_id: str | None, dry_run: bool):
             )
             return
         tasks_to_run = [
-            t for t in config.tasks
-            if is_task_eligible(project_path, t.id, t.interval)
+            t for t in config.tasks if is_task_eligible(project_path, t.id, t.interval)
         ]
 
     if dry_run:

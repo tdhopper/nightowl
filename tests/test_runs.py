@@ -79,8 +79,6 @@ class TestReadRuns:
         # the reader skips it instead of wedging.
         path = tmp_runs_root / "proj.jsonl"
         path.parent.mkdir(parents=True)
-        path.write_text(
-            '{"task_id": "a"}\nNOT JSON\n{"task_id": "b"}\n'
-        )
+        path.write_text('{"task_id": "a"}\nNOT JSON\n{"task_id": "b"}\n')
         result = runs.read_runs("/proj")
         assert [r["task_id"] for r in result] == ["a", "b"]

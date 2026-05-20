@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from nightowl.scheduler import generate_plist, _project_slug
+from nightowl.scheduler import _project_slug, generate_plist
 
 
 class TestScheduler:

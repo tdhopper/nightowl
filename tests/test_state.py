@@ -21,12 +21,14 @@ class TestState:
     def test_record_and_read(self):
         state.record_task_result("/proj", "task1", "success", pr_url="https://pr/1")
         s = state.get_task_state("/proj", "task1")
+        assert s is not None
         assert s["result"] == "success"
         assert s["pr_url"] == "https://pr/1"
 
     def test_record_failure(self):
         state.record_task_result("/proj", "task1", "failure", error="boom")
         s = state.get_task_state("/proj", "task1")
+        assert s is not None
         assert s["result"] == "failure"
         assert s["error"] == "boom"
 
@@ -71,6 +73,7 @@ class TestState:
         state.record_task_started("/proj", "task1")
         assert not state.is_task_eligible("/proj", "task1", timedelta(hours=24))
         s = state.get_task_state("/proj", "task1")
+        assert s is not None
         assert s["result"] == "started"
         assert "last_run" in s
 
@@ -78,6 +81,7 @@ class TestState:
         state.record_task_started("/proj", "task1")
         state.record_task_result("/proj", "task1", "success", pr_url="https://pr/1")
         s = state.get_task_state("/proj", "task1")
+        assert s is not None
         assert s["result"] == "success"
         assert s["pr_url"] == "https://pr/1"
 
@@ -104,11 +108,14 @@ class TestState:
         """A task that ran before then disappeared should keep last_run for
         the status view, and gain a noticed_at timestamp."""
         state.record_task_result("/proj", "ghost", "success")
-        prev_last_run = state.get_task_state("/proj", "ghost")["last_run"]
+        prior = state.get_task_state("/proj", "ghost")
+        assert prior is not None
+        prev_last_run = prior["last_run"]
 
         state.record_task_disappeared("/proj", "ghost")
 
         s = state.get_task_state("/proj", "ghost")
+        assert s is not None
         assert s["result"] == "disappeared"
         assert s["last_run"] == prev_last_run
         assert "noticed_at" in s
@@ -116,6 +123,7 @@ class TestState:
     def test_record_task_disappeared_no_prior_state(self):
         state.record_task_disappeared("/proj", "never-ran")
         s = state.get_task_state("/proj", "never-ran")
+        assert s is not None
         assert s["result"] == "disappeared"
         assert "noticed_at" in s
         assert "last_run" not in s
@@ -124,7 +132,9 @@ class TestState:
         """Re-marking a disappeared task preserves its original noticed_at."""
         state.record_task_result("/proj", "ghost", "success")
         state.record_task_disappeared("/proj", "ghost")
-        original_noticed = state.get_task_state("/proj", "ghost")["noticed_at"]
+        first = state.get_task_state("/proj", "ghost")
+        assert first is not None
+        original_noticed = first["noticed_at"]
 
         future = datetime.now() + timedelta(hours=5)
         with patch("nightowl.state.datetime") as mock_dt:
@@ -132,5 +142,6 @@ class TestState:
             mock_dt.fromisoformat = datetime.fromisoformat
             state.record_task_disappeared("/proj", "ghost")
 
-        # noticed_at should be unchanged
-        assert state.get_task_state("/proj", "ghost")["noticed_at"] == original_noticed
+        after = state.get_task_state("/proj", "ghost")
+        assert after is not None
+        assert after["noticed_at"] == original_noticed
