@@ -16,10 +16,48 @@ macOS scheduling is handled by a launchd plist that runs `nightowl run` at a ran
 ## Installation
 
 ```bash
-pip install nightowl
+uv tool install nightowl
 ```
 
 Requires Python 3.12+, a working `claude` CLI, and `gh` (GitHub CLI) for PR creation.
+
+## Development
+
+This project uses [uv](https://docs.astral.sh/uv/) for packaging and environment management, [Ruff](https://docs.astral.sh/ruff/) for linting and formatting, [Pyrefly](https://pyrefly.org/) for type checking, [pytest](https://docs.pytest.org/) for testing, and [coverage.py](https://coverage.readthedocs.io/) for coverage. CI (`.github/workflows/ci.yml`) runs the same checks across Python 3.12, 3.13, and 3.14.
+
+A pinned copy of [Makefile.uv](https://github.com/python-developer-tooling-handbook/makefile.uv) ships in the repo so common workflows have one-word shortcuts:
+
+```bash
+make sync         # uv sync --dev
+make lint         # ruff check
+make format       # ruff format
+make typecheck    # pyrefly check
+make test         # pytest in the default venv
+make test-py3.12  # pytest in a dedicated 3.12 venv at .venv-3.12
+make test-all     # test-py<VER> for every entry in PYTHON_VERSIONS (3.12 / 3.13 / 3.14)
+make clean        # remove .venv*, dist, caches
+```
+
+The underlying `uv` commands work the same way directly:
+
+```bash
+uv sync --locked --dev
+uv run pytest
+uv run ruff check .
+uv run ruff format .
+uv run pyrefly check
+uv run coverage run -m pytest
+uv run coverage report
+
+# Install pre-commit hooks (runs ruff + standard hygiene checks on commit)
+uvx pre-commit install
+```
+
+To upgrade `Makefile.uv`, re-run the install with a newer tag:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/python-developer-tooling-handbook/makefile.uv/v0.3.0/Makefile.uv -o Makefile.uv
+```
 
 ## Getting started
 

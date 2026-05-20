@@ -30,7 +30,9 @@ class TestSetupLogging:
         logger = nl_logging.setup_logging()
 
         stream_handlers = [
-            h for h in logger.handlers if isinstance(h, logging.StreamHandler)
+            h
+            for h in logger.handlers
+            if isinstance(h, logging.StreamHandler)
             and not isinstance(h, logging.FileHandler)
         ]
         assert len(stream_handlers) >= 1, (
@@ -44,5 +46,7 @@ class TestSetupLogging:
 
     def test_file_handler_attached(self, tmp_log_dir):
         logger = nl_logging.setup_logging()
-        file_handlers = [h for h in logger.handlers if isinstance(h, logging.FileHandler)]
+        file_handlers = [
+            h for h in logger.handlers if isinstance(h, logging.FileHandler)
+        ]
         assert file_handlers, "expected a FileHandler for the daily log file"

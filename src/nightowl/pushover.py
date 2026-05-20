@@ -104,21 +104,21 @@ def send_failure_notification(
 
     title, message = build_failure_message(failed, project_dir=project_dir)
 
-    payload = urllib.parse.urlencode({
-        "token": token,
-        "user": user,
-        "title": title,
-        "message": message,
-    }).encode("utf-8")
+    payload = urllib.parse.urlencode(
+        {
+            "token": token,
+            "user": user,
+            "title": title,
+            "message": message,
+        }
+    ).encode("utf-8")
     req = urllib.request.Request(PUSHOVER_API_URL, data=payload, method="POST")
 
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = resp.read().decode("utf-8", errors="replace")
             if resp.status >= 300:
-                logger.warning(
-                    f"Pushover returned HTTP {resp.status}: {body.strip()}"
-                )
+                logger.warning(f"Pushover returned HTTP {resp.status}: {body.strip()}")
                 return False
             try:
                 parsed = json.loads(body)

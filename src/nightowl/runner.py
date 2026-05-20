@@ -13,7 +13,6 @@ from pathlib import Path
 from nightowl.config import SkipIfOpenCheck, Task
 from nightowl.state import record_task_started
 
-
 WORKTREE_ROOT = Path.home() / ".cache" / "nightowl" / "worktrees"
 TASK_STATE_ROOT = Path.home() / ".local" / "state" / "nightowl"
 
@@ -45,8 +44,12 @@ def _run(
     logger.debug(f"Running: {' '.join(cmd)}")
     try:
         result = subprocess.run(
-            cmd, cwd=cwd, capture_output=True, text=True,
-            timeout=timeout, env=env,
+            cmd,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
         )
     except subprocess.TimeoutExpired:
         logger.error(f"Command timed out after {timeout}s: {' '.join(cmd)}")
@@ -59,7 +62,9 @@ def _run(
 
 
 def _generate_pr_metadata(
-    task: Task, project_dir: Path, logger: Logger,
+    task: Task,
+    project_dir: Path,
+    logger: Logger,
 ) -> tuple[str, str]:
     """Pick a PR title and body for the task's branch.
 
@@ -90,11 +95,13 @@ def _generate_pr_metadata(
 
     diff_result = _run(
         ["git", "diff", "origin/main", "--stat"],
-        cwd=project_dir, logger=logger,
+        cwd=project_dir,
+        logger=logger,
     )
     full_diff = _run(
         ["git", "diff", "origin/main"],
-        cwd=project_dir, logger=logger,
+        cwd=project_dir,
+        logger=logger,
     )
     # Truncate diff to avoid blowing up context
     diff_text = full_diff.stdout[:8000] if full_diff.stdout else "(no diff)"
@@ -113,8 +120,19 @@ def _generate_pr_metadata(
 
     logger.info("Generating PR title and body with Claude...")
     result = _run(
-        ["claude", "-p", "--model", "claude-opus-4-6", "--output-format", "text", "--", prompt],
-        cwd=project_dir, logger=logger, timeout=120,
+        [
+            "claude",
+            "-p",
+            "--model",
+            "claude-opus-4-6",
+            "--output-format",
+            "text",
+            "--",
+            prompt,
+        ],
+        cwd=project_dir,
+        logger=logger,
+        timeout=120,
     )
 
     title = task.name
@@ -124,13 +142,13 @@ def _generate_pr_metadata(
         lines = result.stdout.strip().splitlines()
         for line in lines:
             if line.startswith("TITLE:"):
-                title = line[len("TITLE:"):].strip()
+                title = line[len("TITLE:") :].strip()
             elif line.startswith("BODY:"):
-                body = line[len("BODY:"):].strip()
+                body = line[len("BODY:") :].strip()
                 # Grab remaining lines as part of body
                 idx = lines.index(line)
                 if idx + 1 < len(lines):
-                    body = body + "\n" + "\n".join(lines[idx + 1:])
+                    body = body + "\n" + "\n".join(lines[idx + 1 :])
                 break
         body += "\n\n---\n*Automated by nightowl*"
     else:
@@ -143,13 +161,15 @@ def _get_working_diff(project_dir: Path, logger: Logger) -> str:
     """Get the current working diff against origin/main plus any new untracked files."""
     diff_result = _run(
         ["git", "diff", "origin/main"],
-        cwd=project_dir, logger=logger,
+        cwd=project_dir,
+        logger=logger,
     )
     diff_text = diff_result.stdout or ""
 
     untracked = _run(
         ["git", "ls-files", "--others", "--exclude-standard"],
-        cwd=project_dir, logger=logger,
+        cwd=project_dir,
+        logger=logger,
     )
     if untracked.stdout and untracked.stdout.strip():
         diff_text += "\n\n--- New untracked files ---\n"
@@ -165,7 +185,9 @@ def _get_working_diff(project_dir: Path, logger: Logger) -> str:
 
 
 def _run_codex_fact_check(
-    diff_text: str, project_dir: Path, logger: Logger,
+    diff_text: str,
+    project_dir: Path,
+    logger: Logger,
 ) -> tuple[bool, str]:
     """Run Codex to fact-check the given diff. Returns (passed, feedback)."""
     prompt = (
@@ -181,22 +203,32 @@ def _run_codex_fact_check(
 
     try:
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False,
+            mode="w",
+            suffix=".txt",
+            delete=False,
         ) as tmp:
             tmp_path = tmp.name
 
         result = _run(
             [
-                "codex", "exec", "--ephemeral",
-                "-o", tmp_path,
-                "-C", str(project_dir),
+                "codex",
+                "exec",
+                "--ephemeral",
+                "-o",
+                tmp_path,
+                "-C",
+                str(project_dir),
                 prompt,
             ],
-            cwd=project_dir, logger=logger, timeout=300,
+            cwd=project_dir,
+            logger=logger,
+            timeout=300,
         )
 
         if result.returncode != 0:
-            logger.warning(f"Codex exited with code {result.returncode}, treating as pass")
+            logger.warning(
+                f"Codex exited with code {result.returncode}, treating as pass"
+            )
             return (True, "")
 
         output = Path(tmp_path).read_text().strip()
@@ -207,7 +239,9 @@ def _run_codex_fact_check(
         elif "VERDICT: ISSUES FOUND" in output:
             return (False, output)
         else:
-            logger.warning("Codex output did not contain a recognized verdict, treating as pass")
+            logger.warning(
+                "Codex output did not contain a recognized verdict, treating as pass"
+            )
             return (True, "")
 
     except (subprocess.TimeoutExpired, Exception) as e:
@@ -216,7 +250,9 @@ def _run_codex_fact_check(
 
 
 def _run_fact_check_loop(
-    task: Task, project_dir: Path, logger: Logger,
+    task: Task,
+    project_dir: Path,
+    logger: Logger,
 ) -> None:
     """Run up to 3 rounds of Codex fact-checking, re-invoking Claude to fix issues."""
     max_iterations = 3
@@ -249,19 +285,31 @@ def _run_fact_check_loop(
 
         _run(
             [
-                "claude", "-p", "--model", "claude-opus-4-6",
+                "claude",
+                "-p",
+                "--model",
+                "claude-opus-4-6",
                 "--dangerously-skip-permissions",
-                "--output-format", "json",
-                "--", fix_prompt,
+                "--output-format",
+                "json",
+                "--",
+                fix_prompt,
             ],
-            cwd=project_dir, logger=logger, timeout=1800, env=claude_env,
+            cwd=project_dir,
+            logger=logger,
+            timeout=1800,
+            env=claude_env,
         )
 
-    logger.warning(f"Fact-check did not pass after {max_iterations} iterations, proceeding anyway")
+    logger.warning(
+        f"Fact-check did not pass after {max_iterations} iterations, proceeding anyway"
+    )
 
 
 def _check_skip_if_open(
-    task: Task, project_dir: Path, logger: Logger,
+    task: Task,
+    project_dir: Path,
+    logger: Logger,
 ) -> str | None:
     """If any configured artifact check matches, return a human-readable reason.
 
@@ -287,7 +335,10 @@ def _check_skip_if_open(
 
 
 def _run_skip_check(
-    check: SkipIfOpenCheck, task_id: str, project_dir: Path, logger: Logger,
+    check: SkipIfOpenCheck,
+    task_id: str,
+    project_dir: Path,
+    logger: Logger,
 ) -> tuple[int | None, str]:
     """Run one ``gh`` query for a skip check. Returns (count, ref_description).
 
@@ -299,10 +350,15 @@ def _run_skip_check(
         # (the runner uses the date-prefixed form, but legacy branches and
         # custom slugs like `nightowl/trim-bloat-<page>` also count).
         cmd = [
-            "gh", "pr", "list",
-            "--author", "@me",
-            "--state", "open",
-            "--json", "headRefName,url",
+            "gh",
+            "pr",
+            "list",
+            "--author",
+            "@me",
+            "--state",
+            "open",
+            "--json",
+            "headRefName,url",
         ]
         result = _run(cmd, cwd=project_dir, logger=logger, timeout=60)
         if result.returncode != 0:
@@ -317,21 +373,31 @@ def _run_skip_check(
             logger.warning(f"skip_if_open pr-branch-prefix parse failed: {e}")
             return None, ""
         matches = [
-            p for p in prs
+            p
+            for p in prs
             if isinstance(p, dict)
             and p.get("headRefName", "").startswith("nightowl/")
             and value in p.get("headRefName", "")
         ]
-        ref = matches[0].get("url", matches[0].get("headRefName", "")) if matches else ""
+        if matches:
+            first = matches[0]
+            ref = str(first.get("url") or first.get("headRefName") or "")
+        else:
+            ref = ""
         return len(matches), ref
 
     if check.type == "issue-label":
         value = check.value or f"source:{task_id}"
         cmd = [
-            "gh", "issue", "list",
-            "--label", value,
-            "--state", "open",
-            "--json", "number,url",
+            "gh",
+            "issue",
+            "list",
+            "--label",
+            value,
+            "--state",
+            "open",
+            "--json",
+            "number,url",
         ]
         result = _run(cmd, cwd=project_dir, logger=logger, timeout=60)
         if result.returncode != 0:
@@ -351,11 +417,17 @@ def _run_skip_check(
     if check.type == "issue-title":
         value = check.value or task_id
         cmd = [
-            "gh", "issue", "list",
-            "--author", "@me",
-            "--state", "open",
-            "--search", f"{value} in:title",
-            "--json", "number,url",
+            "gh",
+            "issue",
+            "list",
+            "--author",
+            "@me",
+            "--state",
+            "open",
+            "--search",
+            f"{value} in:title",
+            "--json",
+            "number,url",
         ]
         result = _run(cmd, cwd=project_dir, logger=logger, timeout=60)
         if result.returncode != 0:
@@ -377,12 +449,16 @@ def _run_skip_check(
 
 
 def _cleanup_worktree(
-    project_dir: Path, worktree_path: Path, branch: str, logger: Logger,
+    project_dir: Path,
+    worktree_path: Path,
+    branch: str,
+    logger: Logger,
 ) -> None:
     """Remove the worktree directory and branch, tolerating partial state."""
     _run(
         ["git", "worktree", "remove", "--force", str(worktree_path)],
-        cwd=project_dir, logger=logger,
+        cwd=project_dir,
+        logger=logger,
     )
     _run(["git", "worktree", "prune"], cwd=project_dir, logger=logger)
     if worktree_path.exists():
@@ -409,7 +485,7 @@ def _parse_claude_envelope(stdout: str | None) -> dict:
         "claude_output_tokens",
         "claude_cache_read_tokens",
     )
-    empty = {k: None for k in keys}
+    empty = dict.fromkeys(keys)
     if not stdout:
         return empty
     try:
@@ -478,12 +554,16 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
         # Create the worktree on a fresh branch from origin/main
         result = _run(
             [
-                "git", "worktree", "add",
+                "git",
+                "worktree",
+                "add",
                 str(worktree_path),
-                "-b", branch,
+                "-b",
+                branch,
                 "origin/main",
             ],
-            cwd=project_dir, logger=logger,
+            cwd=project_dir,
+            logger=logger,
         )
         if result.returncode != 0:
             raise RuntimeError(f"git worktree add failed: {result.stderr}")
@@ -491,7 +571,8 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
         # Snapshot untracked files before claude runs
         pre_untracked = _run(
             ["git", "ls-files", "--others", "--exclude-standard"],
-            cwd=worktree_path, logger=logger,
+            cwd=worktree_path,
+            logger=logger,
         )
         pre_untracked_set = set(pre_untracked.stdout.strip().splitlines())
 
@@ -505,14 +586,20 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
         claude_cmd = [
             "claude",
             "-p",
-            "--model", "claude-opus-4-6",
+            "--model",
+            "claude-opus-4-6",
             "--dangerously-skip-permissions",
-            "--output-format", "json",
-            "--", task.prompt,
+            "--output-format",
+            "json",
+            "--",
+            task.prompt,
         ]
         claude_result = _run(
-            claude_cmd, cwd=worktree_path, logger=logger,
-            timeout=1800, env=claude_env,
+            claude_cmd,
+            cwd=worktree_path,
+            logger=logger,
+            timeout=1800,
+            env=claude_env,
         )
         logger.info(f"Claude exit code: {claude_result.returncode}")
         claude_envelope_stdout = claude_result.stdout
@@ -526,25 +613,27 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
         # Check if Claude already committed (branch ahead of origin/main)
         rev_list = _run(
             ["git", "rev-list", "--count", "origin/main..HEAD"],
-            cwd=worktree_path, logger=logger,
+            cwd=worktree_path,
+            logger=logger,
         )
         commits_ahead = int(rev_list.stdout.strip() or "0")
 
         # Find uncommitted working-tree changes (unstaged tracked files)
         wt_diff = _run(
             ["git", "diff", "--name-only"],
-            cwd=worktree_path, logger=logger,
+            cwd=worktree_path,
+            logger=logger,
         )
-        uncommitted_files = [
-            f for f in wt_diff.stdout.strip().splitlines() if f
-        ]
+        uncommitted_files = [f for f in wt_diff.stdout.strip().splitlines() if f]
         # Find new untracked files claude created
         post_untracked = _run(
             ["git", "ls-files", "--others", "--exclude-standard"],
-            cwd=worktree_path, logger=logger,
+            cwd=worktree_path,
+            logger=logger,
         )
         new_files = [
-            f for f in post_untracked.stdout.strip().splitlines()
+            f
+            for f in post_untracked.stdout.strip().splitlines()
             if f and f not in pre_untracked_set
         ]
         uncommitted_files.extend(new_files)
@@ -556,7 +645,11 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
         if has_changes and task.output in ("pr", "commit"):
             # Only add/commit if there are uncommitted changes
             if uncommitted_files:
-                _run(["git", "add", "--"] + uncommitted_files, cwd=worktree_path, logger=logger)
+                _run(
+                    ["git", "add", "--"] + uncommitted_files,
+                    cwd=worktree_path,
+                    logger=logger,
+                )
                 result = _run(
                     ["git", "commit", "-m", task.name],
                     cwd=worktree_path,
@@ -584,11 +677,17 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
                 # "a pull request for branch ... already exists".
                 existing = _run(
                     [
-                        "gh", "pr", "list",
-                        "--head", branch,
-                        "--state", "open",
-                        "--json", "url",
-                        "--jq", ".[0].url // empty",
+                        "gh",
+                        "pr",
+                        "list",
+                        "--head",
+                        branch,
+                        "--state",
+                        "open",
+                        "--json",
+                        "url",
+                        "--jq",
+                        ".[0].url // empty",
                     ],
                     cwd=worktree_path,
                     logger=logger,
@@ -598,13 +697,19 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
                     logger.info(f"PR already opened by task: {pr_url}")
                 else:
                     pr_title, pr_body = _generate_pr_metadata(
-                        task, worktree_path, logger,
+                        task,
+                        worktree_path,
+                        logger,
                     )
                     result = _run(
                         [
-                            "gh", "pr", "create",
-                            "--title", pr_title,
-                            "--body", pr_body,
+                            "gh",
+                            "pr",
+                            "create",
+                            "--title",
+                            pr_title,
+                            "--body",
+                            pr_body,
                         ],
                         cwd=worktree_path,
                         logger=logger,

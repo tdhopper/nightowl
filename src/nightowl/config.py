@@ -8,23 +8,37 @@ from pathlib import Path
 
 import yaml
 
-
 logger = logging.getLogger("nightowl")
 
 
 WEEKDAY_NAMES = {
-    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
-    "friday": 4, "saturday": 5, "sunday": 6,
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
 }
 
-WEEKDAY_DISPLAY = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+WEEKDAY_DISPLAY = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+]
 
 
 def parse_interval(s: str) -> timedelta:
     """Parse an interval string like '24h', '72h', or '7d' into a timedelta."""
     m = re.fullmatch(r"(\d+)([hd])", s.strip())
     if not m:
-        raise ValueError(f"Invalid interval format: {s!r}. Expected e.g. '24h' or '7d'.")
+        raise ValueError(
+            f"Invalid interval format: {s!r}. Expected e.g. '24h' or '7d'."
+        )
     value, unit = int(m.group(1)), m.group(2)
     if unit == "h":
         return timedelta(hours=value)
@@ -45,7 +59,9 @@ def parse_weekday(name: object) -> int:
 def parse_frontmatter(text: str, source: str = "<string>") -> tuple[dict, str]:
     """Split a markdown file into (frontmatter_dict, body)."""
     if not text.startswith("---\n") and not text.startswith("---\r\n"):
-        raise ValueError(f"{source}: file must start with '---' YAML frontmatter fence.")
+        raise ValueError(
+            f"{source}: file must start with '---' YAML frontmatter fence."
+        )
     # Find closing fence
     lines = text.splitlines(keepends=True)
     close_idx = None
@@ -54,9 +70,11 @@ def parse_frontmatter(text: str, source: str = "<string>") -> tuple[dict, str]:
             close_idx = i
             break
     if close_idx is None:
-        raise ValueError(f"{source}: frontmatter fence not closed (expected '---' on its own line).")
+        raise ValueError(
+            f"{source}: frontmatter fence not closed (expected '---' on its own line)."
+        )
     fm_text = "".join(lines[1:close_idx])
-    body = "".join(lines[close_idx + 1:])
+    body = "".join(lines[close_idx + 1 :])
     frontmatter = yaml.safe_load(fm_text) or {}
     if not isinstance(frontmatter, dict):
         raise ValueError(f"{source}: frontmatter must be a YAML mapping.")
@@ -115,7 +133,9 @@ class Task:
         self.interval = interval
         self.prompt = prompt
         if output not in ("pr", "commit", "none"):
-            raise ValueError(f"Invalid output type: {output!r}. Must be 'pr', 'commit', or 'none'.")
+            raise ValueError(
+                f"Invalid output type: {output!r}. Must be 'pr', 'commit', or 'none'."
+            )
         self.output = output
         self.fact_check = fact_check
         self.skip_if_open = skip_if_open or []

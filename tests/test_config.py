@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 from nightowl.config import (
-    SkipIfOpenCheck,
     load_config,
     parse_frontmatter,
     parse_interval,
@@ -27,10 +26,12 @@ def _git_init_and_add(repo_root: Path, files: list[Path]) -> None:
     for f in files:
         rel = f.relative_to(repo_root)
         subprocess.run(
-            ["git", "-C", str(repo_root), "add", "--", str(rel)], check=True,
+            ["git", "-C", str(repo_root), "add", "--", str(rel)],
+            check=True,
         )
     subprocess.run(
-        ["git", "-C", str(repo_root), "commit", "-q", "-m", "seed"], check=True,
+        ["git", "-C", str(repo_root), "commit", "-q", "-m", "seed"],
+        check=True,
     )
 
 
@@ -39,12 +40,7 @@ def _make_project(tmp_path, tasks: dict[str, str], schedule: str | None = None) 
     nightowl_dir = tmp_path / "nightowl"
     nightowl_dir.mkdir()
     if schedule is None:
-        schedule = (
-            "---\n"
-            'window_start: "22:00"\n'
-            'window_end: "06:00"\n'
-            "---\n"
-        )
+        schedule = '---\nwindow_start: "22:00"\nwindow_end: "06:00"\n---\n'
     (nightowl_dir / "_schedule.md").write_text(schedule)
     for name, content in tasks.items():
         (nightowl_dir / name).write_text(content)
@@ -115,11 +111,7 @@ class TestLoadConfig:
             tmp_path,
             {
                 "test-task.md": (
-                    "---\n"
-                    'name: "Test Task"\n'
-                    "interval: 24h\n"
-                    "---\n"
-                    "Do something\n"
+                    '---\nname: "Test Task"\ninterval: 24h\n---\nDo something\n'
                 ),
             },
         )
@@ -138,13 +130,7 @@ class TestLoadConfig:
         nightowl_dir = _make_project(
             tmp_path,
             {
-                "my-cool-task.md": (
-                    "---\n"
-                    'name: "X"\n'
-                    "interval: 1h\n"
-                    "---\n"
-                    "body\n"
-                ),
+                "my-cool-task.md": ('---\nname: "X"\ninterval: 1h\n---\nbody\n'),
             },
         )
         config = load_config(nightowl_dir)
@@ -154,13 +140,7 @@ class TestLoadConfig:
         nightowl_dir = _make_project(
             tmp_path,
             {
-                "real-task.md": (
-                    "---\n"
-                    'name: "Real"\n'
-                    "interval: 24h\n"
-                    "---\n"
-                    "do it\n"
-                ),
+                "real-task.md": ('---\nname: "Real"\ninterval: 24h\n---\ndo it\n'),
                 "_notes.md": "not a task at all",
             },
         )
@@ -170,9 +150,7 @@ class TestLoadConfig:
     def test_missing_schedule_file(self, tmp_path):
         nightowl_dir = tmp_path / "nightowl"
         nightowl_dir.mkdir()
-        (nightowl_dir / "t.md").write_text(
-            "---\nname: T\ninterval: 1h\n---\nx\n"
-        )
+        (nightowl_dir / "t.md").write_text("---\nname: T\ninterval: 1h\n---\nx\n")
         with pytest.raises(FileNotFoundError, match="Schedule file"):
             load_config(nightowl_dir)
 
@@ -214,14 +192,7 @@ class TestLoadConfig:
         nightowl_dir = _make_project(
             tmp_path,
             {
-                "t.md": (
-                    "---\n"
-                    'name: "T"\n'
-                    "interval: 12h\n"
-                    "output: commit\n"
-                    "---\n"
-                    "Do it\n"
-                ),
+                "t.md": ('---\nname: "T"\ninterval: 12h\noutput: commit\n---\nDo it\n'),
             },
         )
         config = load_config(nightowl_dir)
@@ -231,14 +202,7 @@ class TestLoadConfig:
         nightowl_dir = _make_project(
             tmp_path,
             {
-                "t.md": (
-                    "---\n"
-                    'name: "T"\n'
-                    "interval: 12h\n"
-                    "output: email\n"
-                    "---\n"
-                    "Do it\n"
-                ),
+                "t.md": ('---\nname: "T"\ninterval: 12h\noutput: email\n---\nDo it\n'),
             },
         )
         with pytest.raises(ValueError, match="Invalid output"):
@@ -260,14 +224,7 @@ class TestLoadConfig:
         nightowl_dir = _make_project(
             tmp_path,
             {
-                "t.md": (
-                    "---\n"
-                    "name: T\n"
-                    "interval: 24h\n"
-                    "fact_check: true\n"
-                    "---\n"
-                    "Do it\n"
-                ),
+                "t.md": ("---\nname: T\ninterval: 24h\nfact_check: true\n---\nDo it\n"),
             },
         )
         config = load_config(nightowl_dir)
@@ -409,8 +366,10 @@ class TestLoadConfig:
             },
         )
         config = load_config(nightowl_dir)
-        assert config.get_task("alpha").name == "Alpha"
-        assert config.get_task("beta").name == "Beta"
+        alpha = config.get_task("alpha")
+        beta = config.get_task("beta")
+        assert alpha is not None and alpha.name == "Alpha"
+        assert beta is not None and beta.name == "Beta"
         assert config.get_task("gamma") is None
 
     def test_skip_weekdays(self, tmp_path):
@@ -489,9 +448,7 @@ class TestLoadConfigGitEnumeration:
         nightowl_dir = _make_project(
             tmp_path,
             {
-                "real-task.md": (
-                    "---\nname: Real\ninterval: 24h\n---\nDo it\n"
-                ),
+                "real-task.md": ("---\nname: Real\ninterval: 24h\n---\nDo it\n"),
             },
         )
         _git_init_and_add(

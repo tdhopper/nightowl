@@ -3,8 +3,7 @@ from __future__ import annotations
 import logging
 import subprocess
 from datetime import timedelta
-from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -76,8 +75,10 @@ class TestGetWorkingDiff:
 
 class TestRunCodexFactCheck:
     def test_pass_verdict(self, tmp_path, logger):
-        with patch("nightowl.runner._run") as mock_run, \
-             patch("pathlib.Path.read_text", return_value="VERDICT: PASS"):
+        with (
+            patch("nightowl.runner._run") as mock_run,
+            patch("pathlib.Path.read_text", return_value="VERDICT: PASS"),
+        ):
             proc = MagicMock()
             proc.returncode = 0
             mock_run.return_value = proc
@@ -88,8 +89,10 @@ class TestRunCodexFactCheck:
 
     def test_issues_found_verdict(self, tmp_path, logger):
         codex_output = "VERDICT: ISSUES FOUND\n1. Wrong URL in docs"
-        with patch("nightowl.runner._run") as mock_run, \
-             patch("pathlib.Path.read_text", return_value=codex_output):
+        with (
+            patch("nightowl.runner._run") as mock_run,
+            patch("pathlib.Path.read_text", return_value=codex_output),
+        ):
             proc = MagicMock()
             proc.returncode = 0
             mock_run.return_value = proc
@@ -109,7 +112,9 @@ class TestRunCodexFactCheck:
             assert feedback == ""
 
     def test_codex_timeout_treated_as_pass(self, tmp_path, logger):
-        with patch("nightowl.runner._run", side_effect=subprocess.TimeoutExpired("codex", 300)):
+        with patch(
+            "nightowl.runner._run", side_effect=subprocess.TimeoutExpired("codex", 300)
+        ):
             passed, feedback = _run_codex_fact_check("some diff", tmp_path, logger)
             assert passed is True
             assert feedback == ""
@@ -118,21 +123,28 @@ class TestRunCodexFactCheck:
 class TestRunFactCheckLoop:
     def test_pass_on_first_iteration(self, tmp_path, logger):
         task = _make_task(fact_check=True)
-        with patch("nightowl.runner._get_working_diff", return_value="some diff"), \
-             patch("nightowl.runner._run_codex_fact_check", return_value=(True, "")), \
-             patch("nightowl.runner._run") as mock_run:
+        with (
+            patch("nightowl.runner._get_working_diff", return_value="some diff"),
+            patch("nightowl.runner._run_codex_fact_check", return_value=(True, "")),
+            patch("nightowl.runner._run") as mock_run,
+        ):
             _run_fact_check_loop(task, tmp_path, logger)
             # Claude should NOT be re-invoked
             mock_run.assert_not_called()
 
     def test_issues_then_pass(self, tmp_path, logger):
         task = _make_task(fact_check=True)
-        with patch("nightowl.runner._get_working_diff", return_value="some diff"), \
-             patch("nightowl.runner._run_codex_fact_check", side_effect=[
-                 (False, "VERDICT: ISSUES FOUND\n1. Bad URL"),
-                 (True, ""),
-             ]), \
-             patch("nightowl.runner._run") as mock_run:
+        with (
+            patch("nightowl.runner._get_working_diff", return_value="some diff"),
+            patch(
+                "nightowl.runner._run_codex_fact_check",
+                side_effect=[
+                    (False, "VERDICT: ISSUES FOUND\n1. Bad URL"),
+                    (True, ""),
+                ],
+            ),
+            patch("nightowl.runner._run") as mock_run,
+        ):
             proc = MagicMock()
             proc.returncode = 0
             mock_run.return_value = proc
@@ -146,9 +158,14 @@ class TestRunFactCheckLoop:
 
     def test_max_iterations_exhausted(self, tmp_path, logger):
         task = _make_task(fact_check=True)
-        with patch("nightowl.runner._get_working_diff", return_value="some diff"), \
-             patch("nightowl.runner._run_codex_fact_check", return_value=(False, "VERDICT: ISSUES FOUND\n1. Error")), \
-             patch("nightowl.runner._run") as mock_run:
+        with (
+            patch("nightowl.runner._get_working_diff", return_value="some diff"),
+            patch(
+                "nightowl.runner._run_codex_fact_check",
+                return_value=(False, "VERDICT: ISSUES FOUND\n1. Error"),
+            ),
+            patch("nightowl.runner._run") as mock_run,
+        ):
             proc = MagicMock()
             proc.returncode = 0
             mock_run.return_value = proc
@@ -161,8 +178,10 @@ class TestRunFactCheckLoop:
 
     def test_empty_diff_skips(self, tmp_path, logger):
         task = _make_task(fact_check=True)
-        with patch("nightowl.runner._get_working_diff", return_value=""), \
-             patch("nightowl.runner._run_codex_fact_check") as mock_codex:
+        with (
+            patch("nightowl.runner._get_working_diff", return_value=""),
+            patch("nightowl.runner._run_codex_fact_check") as mock_codex,
+        ):
             _run_fact_check_loop(task, tmp_path, logger)
             mock_codex.assert_not_called()
 
@@ -180,8 +199,10 @@ class TestRunTaskUsesWorktree:
     def test_worktree_add_and_remove_called(self, tmp_path, logger):
         task = _make_task()
         worktree = tmp_path / "wt"
-        with patch("nightowl.runner._run") as mock_run, \
-             patch("nightowl.runner._worktree_path", return_value=worktree):
+        with (
+            patch("nightowl.runner._run") as mock_run,
+            patch("nightowl.runner._worktree_path", return_value=worktree),
+        ):
             proc = MagicMock()
             proc.returncode = 0
             proc.stdout = ""
@@ -205,8 +226,10 @@ class TestRunTaskUsesWorktree:
         """Project working tree is never checked out, reset, or cleaned."""
         task = _make_task()
         worktree = tmp_path / "wt"
-        with patch("nightowl.runner._run") as mock_run, \
-             patch("nightowl.runner._worktree_path", return_value=worktree):
+        with (
+            patch("nightowl.runner._run") as mock_run,
+            patch("nightowl.runner._worktree_path", return_value=worktree),
+        ):
             proc = MagicMock()
             proc.returncode = 0
             proc.stdout = ""
@@ -240,9 +263,11 @@ class TestRunTaskRecordsStart:
 
         call_order: list[str] = []
 
-        with patch("nightowl.runner._run") as mock_run, \
-             patch("nightowl.runner._worktree_path", return_value=worktree), \
-             patch("nightowl.runner.record_task_started") as mock_started:
+        with (
+            patch("nightowl.runner._run") as mock_run,
+            patch("nightowl.runner._worktree_path", return_value=worktree),
+            patch("nightowl.runner.record_task_started") as mock_started,
+        ):
             proc = MagicMock()
             proc.returncode = 0
             proc.stdout = ""
@@ -269,8 +294,10 @@ class TestRunTaskStateDir:
         state_root = tmp_path / "task-state"
         monkeypatch.setattr(runner, "TASK_STATE_ROOT", state_root)
 
-        with patch("nightowl.runner._run") as mock_run, \
-             patch("nightowl.runner._worktree_path", return_value=worktree):
+        with (
+            patch("nightowl.runner._run") as mock_run,
+            patch("nightowl.runner._worktree_path", return_value=worktree),
+        ):
             proc = MagicMock()
             proc.returncode = 0
             proc.stdout = ""
@@ -280,8 +307,7 @@ class TestRunTaskStateDir:
 
             # Find the claude call and check its env kwarg.
             claude_calls = [
-                c for c in mock_run.call_args_list
-                if c.args[0][0] == "claude"
+                c for c in mock_run.call_args_list if c.args[0][0] == "claude"
             ]
             assert claude_calls, "expected at least one claude invocation"
             env = claude_calls[0].kwargs.get("env")
@@ -299,8 +325,10 @@ class TestRunTaskStateDir:
         state_root = tmp_path / "task-state"
         monkeypatch.setattr(runner, "TASK_STATE_ROOT", state_root)
 
-        with patch("nightowl.runner._run") as mock_run, \
-             patch("nightowl.runner._worktree_path", return_value=worktree):
+        with (
+            patch("nightowl.runner._run") as mock_run,
+            patch("nightowl.runner._worktree_path", return_value=worktree),
+        ):
             proc = MagicMock()
             proc.returncode = 0
             proc.stdout = ""
@@ -369,9 +397,7 @@ class TestGeneratePrMetadata:
             assert title == "Generated title"
             assert "Generated body" in body
             # Claude was actually invoked.
-            assert any(
-                c.args[0][0] == "claude" for c in mock_run.call_args_list
-            )
+            assert any(c.args[0][0] == "claude" for c in mock_run.call_args_list)
 
 
 class TestParseClaudeEnvelope:
@@ -418,8 +444,11 @@ class TestRunTaskReturnsObservability:
             '"usage":{"input_tokens":100,"output_tokens":200,'
             '"cache_read_input_tokens":300}}'
         )
-        with patch("nightowl.runner._run") as mock_run, \
-             patch("nightowl.runner._worktree_path", return_value=worktree):
+        with (
+            patch("nightowl.runner._run") as mock_run,
+            patch("nightowl.runner._worktree_path", return_value=worktree),
+        ):
+
             def fake_run(cmd, *a, **kw):
                 proc = MagicMock()
                 proc.returncode = 0
@@ -429,6 +458,7 @@ class TestRunTaskReturnsObservability:
                     proc.stdout = ""
                 proc.stderr = ""
                 return proc
+
             mock_run.side_effect = fake_run
 
             result = run_task(task, tmp_path, logger)
@@ -446,8 +476,10 @@ class TestRunTaskReturnsObservability:
     def test_failure_carries_timing_and_null_envelope(self, tmp_path, logger):
         task = _make_task()
         worktree = tmp_path / "wt"
-        with patch("nightowl.runner._run") as mock_run, \
-             patch("nightowl.runner._worktree_path", return_value=worktree):
+        with (
+            patch("nightowl.runner._run") as mock_run,
+            patch("nightowl.runner._worktree_path", return_value=worktree),
+        ):
             proc = MagicMock()
             proc.returncode = 1
             proc.stdout = ""
@@ -471,9 +503,11 @@ class TestRunTaskFactCheck:
     def test_fact_check_called_when_enabled(self, tmp_path, logger):
         task = _make_task(fact_check=True)
         worktree = tmp_path / "wt"
-        with patch("nightowl.runner._run") as mock_run, \
-             patch("nightowl.runner._run_fact_check_loop") as mock_fc, \
-             patch("nightowl.runner._worktree_path", return_value=worktree):
+        with (
+            patch("nightowl.runner._run") as mock_run,
+            patch("nightowl.runner._run_fact_check_loop") as mock_fc,
+            patch("nightowl.runner._worktree_path", return_value=worktree),
+        ):
             proc = MagicMock()
             proc.returncode = 0
             proc.stdout = ""
@@ -485,9 +519,11 @@ class TestRunTaskFactCheck:
     def test_fact_check_not_called_when_disabled(self, tmp_path, logger):
         task = _make_task(fact_check=False)
         worktree = tmp_path / "wt"
-        with patch("nightowl.runner._run") as mock_run, \
-             patch("nightowl.runner._run_fact_check_loop") as mock_fc, \
-             patch("nightowl.runner._worktree_path", return_value=worktree):
+        with (
+            patch("nightowl.runner._run") as mock_run,
+            patch("nightowl.runner._run_fact_check_loop") as mock_fc,
+            patch("nightowl.runner._worktree_path", return_value=worktree),
+        ):
             proc = MagicMock()
             proc.returncode = 0
             proc.stdout = ""
@@ -558,7 +594,8 @@ class TestRunSkipCheck:
 
     def test_issue_label_custom_value(self, tmp_path, logger):
         check = SkipIfOpenCheck(
-            type="issue-label", value="source:competitive-analysis",
+            type="issue-label",
+            value="source:competitive-analysis",
         )
         gh_out = '[{"number": 1, "url": "u"}, {"number": 2, "url": "u"}]'
         with patch("nightowl.runner._run", return_value=_gh_proc(gh_out)) as mock_run:
@@ -604,7 +641,8 @@ class TestCheckSkipIfOpen:
             skip_if_open=[SkipIfOpenCheck(type="pr-branch-prefix")],
         )
         with patch(
-            "nightowl.runner._run_skip_check", return_value=(1, "https://gh/pr/1"),
+            "nightowl.runner._run_skip_check",
+            return_value=(1, "https://gh/pr/1"),
         ):
             reason = _check_skip_if_open(task, tmp_path, logger)
         assert reason is not None
@@ -663,13 +701,15 @@ class TestRunTaskSkipIfOpen:
             skip_if_open=[SkipIfOpenCheck(type="pr-branch-prefix")],
         )
         worktree = tmp_path / "wt"
-        with patch(
-            "nightowl.runner._check_skip_if_open",
-            return_value="pr-branch-prefix matched 1: https://gh/pr/1",
-        ), \
-             patch("nightowl.runner._run") as mock_run, \
-             patch("nightowl.runner._worktree_path", return_value=worktree), \
-             patch("nightowl.runner.record_task_started") as mock_started:
+        with (
+            patch(
+                "nightowl.runner._check_skip_if_open",
+                return_value="pr-branch-prefix matched 1: https://gh/pr/1",
+            ),
+            patch("nightowl.runner._run") as mock_run,
+            patch("nightowl.runner._worktree_path", return_value=worktree),
+            patch("nightowl.runner.record_task_started") as mock_started,
+        ):
             result = run_task(task, tmp_path, logger)
             assert result["result"] == "skipped_open_artifact"
             assert "https://gh/pr/1" in result["skip_reason"]
@@ -682,9 +722,11 @@ class TestRunTaskSkipIfOpen:
             skip_if_open=[SkipIfOpenCheck(type="pr-branch-prefix")],
         )
         worktree = tmp_path / "wt"
-        with patch("nightowl.runner._check_skip_if_open", return_value=None), \
-             patch("nightowl.runner._run") as mock_run, \
-             patch("nightowl.runner._worktree_path", return_value=worktree):
+        with (
+            patch("nightowl.runner._check_skip_if_open", return_value=None),
+            patch("nightowl.runner._run") as mock_run,
+            patch("nightowl.runner._worktree_path", return_value=worktree),
+        ):
             proc = MagicMock()
             proc.returncode = 0
             proc.stdout = ""

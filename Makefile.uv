@@ -1,0 +1,85 @@
+# Makefile.uv — reusable uv-backed test orchestration for Python projects.
+# Homepage: https://github.com/python-developer-tooling-handbook/makefile.uv
+# License: MIT
+
+PYTHON_VERSIONS ?= 3.11 3.12 3.13 3.14
+DEP_VARIANTS    ?=
+DEP_MODE        ?= extra
+PYTEST          ?= pytest
+FORMAT          ?= ruff format
+TYPECHECK       ?= mypy
+UV_VENV_PREFIX  ?= .venv-
+UV_SYNC_FLAGS   ?=
+UV_RUN_FLAGS    ?=
+
+# LINT is a GNU Make built-in (`lint`); plain `?=` would see it as already
+# defined. Force-set our default when it's still the built-in; fall through
+# to ?= so user overrides still win.
+ifeq ($(origin LINT),default)
+LINT := ruff check
+endif
+LINT            ?= ruff check
+
+# Pattern rules use FORCE as a prereq so a file sharing the target name
+# (e.g. accidentally `touch test-py3.12`) can't fool Make into skipping it.
+.PHONY: sync test test-all matrix lint format typecheck clean help FORCE
+FORCE:
+
+sync:
+	uv sync $(UV_SYNC_FLAGS)
+
+test:
+	uv run $(UV_RUN_FLAGS) $(PYTEST)
+
+test-py%: FORCE
+	UV_PROJECT_ENVIRONMENT="$(UV_VENV_PREFIX)$*" uv run --python "$*" $(UV_RUN_FLAGS) $(PYTEST)
+
+test-all: $(foreach v,$(PYTHON_VERSIONS),test-py$(v))
+
+matrix: $(foreach py,$(PYTHON_VERSIONS),$(foreach var,$(DEP_VARIANTS),test-cell-py$(py)-$(var)))
+
+# DEP_MODE selects --extra (PEP 621 optional-dependencies, the default) or
+# --group (PEP 735 dependency-groups). cut -f2- so variant names may contain
+# dashes (e.g. "with-chardet", "django-5").
+test-cell-py%: FORCE
+	@PY=$$(echo "$*" | cut -d- -f1); VAR=$$(echo "$*" | cut -d- -f2-); \
+	  UV_PROJECT_ENVIRONMENT="$(UV_VENV_PREFIX)cell-$*" \
+	  uv run --python "$$PY" --$(DEP_MODE) "$$VAR" $(UV_RUN_FLAGS) $(PYTEST)
+
+lint:
+	uv run $(UV_RUN_FLAGS) $(LINT)
+
+format:
+	uv run $(UV_RUN_FLAGS) $(FORMAT)
+
+typecheck:
+	uv run $(UV_RUN_FLAGS) $(TYPECHECK)
+
+# Empty UV_VENV_PREFIX would make "$(UV_VENV_PREFIX)"* expand to * and wipe
+# cwd. -- stops rm from reading any glob match as a flag.
+clean:
+	@test -n "$(UV_VENV_PREFIX)" || { echo "clean: UV_VENV_PREFIX is empty — refusing." >&2; exit 1; }
+	rm -rf -- .venv "$(UV_VENV_PREFIX)"* dist *.egg-info .pytest_cache
+
+help:
+	@echo "Makefile.uv targets:"
+	@echo "  sync                    uv sync"
+	@echo "  test                    uv run \$$(PYTEST)"
+	@echo "  test-py<VER>            run \$$(PYTEST) on Python <VER> in a dedicated venv"
+	@echo "  test-all                test-py<VER> for each version in PYTHON_VERSIONS"
+	@echo "  matrix                  Python × DEP_VARIANTS cells (DEP_VARIANTS empty = no-op)"
+	@echo "  test-cell-py<VER>-<VAR> run one matrix cell"
+	@echo "  lint / format / typecheck  run \$$(LINT) / \$$(FORMAT) / \$$(TYPECHECK)"
+	@echo "  clean                   remove venvs and build artifacts"
+	@echo ""
+	@echo "Variables (set before 'include Makefile.uv' to override):"
+	@echo "  PYTHON_VERSIONS = $(PYTHON_VERSIONS)"
+	@echo "  DEP_VARIANTS    = $(DEP_VARIANTS)"
+	@echo "  DEP_MODE        = $(DEP_MODE)"
+	@echo "  PYTEST          = $(PYTEST)"
+	@echo "  LINT            = $(LINT)"
+	@echo "  FORMAT          = $(FORMAT)"
+	@echo "  TYPECHECK       = $(TYPECHECK)"
+	@echo "  UV_VENV_PREFIX  = $(UV_VENV_PREFIX)"
+	@echo "  UV_SYNC_FLAGS   = $(UV_SYNC_FLAGS)"
+	@echo "  UV_RUN_FLAGS    = $(UV_RUN_FLAGS)"
