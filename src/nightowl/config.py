@@ -83,6 +83,11 @@ def parse_frontmatter(text: str, source: str = "<string>") -> tuple[dict, str]:
 
 SKIP_IF_OPEN_TYPES = ("pr-branch-prefix", "issue-label", "issue-title")
 
+# Model used for a task's Claude invocations when its frontmatter omits
+# ``model:``. Kept at opus-4-6 so existing tasks behave exactly as before;
+# per-task ``model:`` overrides this to a cheaper tier (e.g. sonnet/haiku).
+DEFAULT_MODEL = "claude-opus-4-6"
+
 
 class SkipIfOpenCheck:
     """One artifact-existence check that, if it matches, skips the task.
@@ -127,6 +132,7 @@ class Task:
         output: str = "pr",
         fact_check: bool = False,
         skip_if_open: list[SkipIfOpenCheck] | None = None,
+        model: str = DEFAULT_MODEL,
     ):
         self.id = id
         self.name = name
@@ -139,6 +145,11 @@ class Task:
         self.output = output
         self.fact_check = fact_check
         self.skip_if_open = skip_if_open or []
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError(
+                f"Invalid model: {model!r}. Must be a non-empty string."
+            )
+        self.model = model
 
 
 CADENCES = ("daily", "hourly")
@@ -248,6 +259,7 @@ def _load_task(path: Path) -> Task:
         output=fm.get("output", "pr"),
         fact_check=bool(fm.get("fact_check", False)),
         skip_if_open=_parse_skip_if_open(fm.get("skip_if_open"), source=path.name),
+        model=fm.get("model") or DEFAULT_MODEL,
     )
 
 
@@ -295,7 +307,9 @@ def load_config(path: Path | None = None) -> Config:
     - `_schedule.md`: YAML frontmatter with `window_start`, `window_end`, and
       optional `skip_weekdays` (list of weekday names). Body is ignored.
     - `<task-id>.md`: one per task. Frontmatter has `name`, `interval`, and
-      optional `output` (default "pr"), `fact_check` (default false), and
+      optional `output` (default "pr"), `fact_check` (default false),
+      `model` (default `DEFAULT_MODEL`; set to a cheaper tier to control
+      cost), and
       `skip_if_open` (default none — a list of artifact-existence checks
       that, if any matches, skips the run; see ``SkipIfOpenCheck``). The
       markdown body is the task prompt. The filename stem becomes the task id.

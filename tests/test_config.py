@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from nightowl.config import (
+    DEFAULT_MODEL,
     load_config,
     parse_frontmatter,
     parse_interval,
@@ -229,6 +230,42 @@ class TestLoadConfig:
         )
         config = load_config(nightowl_dir)
         assert config.tasks[0].fact_check is True
+
+    def test_model_defaults_to_opus(self, tmp_path):
+        nightowl_dir = _make_project(
+            tmp_path,
+            {"t.md": "---\nname: T\ninterval: 24h\n---\nDo it\n"},
+        )
+        config = load_config(nightowl_dir)
+        assert config.tasks[0].model == DEFAULT_MODEL
+
+    def test_custom_model(self, tmp_path):
+        nightowl_dir = _make_project(
+            tmp_path,
+            {
+                "t.md": (
+                    "---\nname: T\ninterval: 24h\nmodel: claude-haiku-4-5\n---\nDo it\n"
+                ),
+            },
+        )
+        config = load_config(nightowl_dir)
+        assert config.tasks[0].model == "claude-haiku-4-5"
+
+    def test_empty_model_falls_back_to_default(self, tmp_path):
+        nightowl_dir = _make_project(
+            tmp_path,
+            {"t.md": '---\nname: T\ninterval: 24h\nmodel: ""\n---\nDo it\n'},
+        )
+        config = load_config(nightowl_dir)
+        assert config.tasks[0].model == DEFAULT_MODEL
+
+    def test_non_string_model_rejected(self, tmp_path):
+        nightowl_dir = _make_project(
+            tmp_path,
+            {"t.md": "---\nname: T\ninterval: 24h\nmodel: 123\n---\nDo it\n"},
+        )
+        with pytest.raises(ValueError, match="Invalid model"):
+            load_config(nightowl_dir)
 
     def test_skip_if_open_defaults_empty(self, tmp_path):
         nightowl_dir = _make_project(
