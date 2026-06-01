@@ -146,9 +146,7 @@ class Task:
         self.fact_check = fact_check
         self.skip_if_open = skip_if_open or []
         if not isinstance(model, str) or not model.strip():
-            raise ValueError(
-                f"Invalid model: {model!r}. Must be a non-empty string."
-            )
+            raise ValueError(f"Invalid model: {model!r}. Must be a non-empty string.")
         self.model = model
 
 
