@@ -40,6 +40,7 @@ def _run(
     logger: Logger,
     timeout: int | None = None,
     env: dict[str, str] | None = None,
+    stdin=None,
 ) -> subprocess.CompletedProcess:
     logger.debug(f"Running: {' '.join(cmd)}")
     try:
@@ -50,6 +51,7 @@ def _run(
             text=True,
             timeout=timeout,
             env=env,
+            stdin=stdin,
         )
     except subprocess.TimeoutExpired:
         logger.error(f"Command timed out after {timeout}s: {' '.join(cmd)}")
@@ -470,6 +472,61 @@ def _cleanup_worktree(
     _run(["git", "branch", "-D", branch], cwd=project_dir, logger=logger)
 
 
+def _run_agent_task(
+    task: Task,
+    project_dir: Path,
+    logger: Logger,
+    env: dict[str, str],
+) -> subprocess.CompletedProcess:
+    """Run the configured task agent in a non-interactive launchd-safe mode."""
+    if task.agent == "claude":
+        logger.info("Running claude...")
+        return _run(
+            [
+                "claude",
+                "-p",
+                "--model",
+                task.model,
+                "--dangerously-skip-permissions",
+                "--output-format",
+                "json",
+                "--",
+                task.prompt,
+            ],
+            cwd=project_dir,
+            logger=logger,
+            timeout=1800,
+            env=env,
+        )
+
+    if task.agent == "codex":
+        logger.info("Running codex...")
+        cmd = [
+            "codex",
+            "exec",
+            "--ephemeral",
+            "--disable",
+            "hooks",
+            "-s",
+            "workspace-write",
+            "-c",
+            f'model_reasoning_effort="{task.codex_reasoning_effort}"',
+        ]
+        if task.codex_model is not None:
+            cmd.extend(["--model", task.codex_model])
+        cmd.extend(["--", task.prompt])
+        return _run(
+            cmd,
+            cwd=project_dir,
+            logger=logger,
+            timeout=1800,
+            env=env,
+            stdin=subprocess.DEVNULL,
+        )
+
+    raise ValueError(f"Unsupported task agent: {task.agent!r}")
+
+
 def _parse_claude_envelope(stdout: str | None) -> dict:
     """Pull cost and token fields out of claude's ``--output-format json`` envelope.
 
@@ -568,7 +625,7 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
         if result.returncode != 0:
             raise RuntimeError(f"git worktree add failed: {result.stderr}")
 
-        # Snapshot untracked files before claude runs
+        # Snapshot untracked files before the agent runs
         pre_untracked = _run(
             ["git", "ls-files", "--others", "--exclude-standard"],
             cwd=worktree_path,
@@ -579,33 +636,23 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
         # Per-task state dir that survives worktree teardown.
         state_dir = _task_state_dir(task.id)
         state_dir.mkdir(parents=True, exist_ok=True)
-        claude_env = {**os.environ, "NIGHTOWL_STATE_DIR": str(state_dir)}
+        agent_env = {**os.environ, "NIGHTOWL_STATE_DIR": str(state_dir)}
 
-        # Run claude (30 min timeout per task)
-        logger.info("Running claude...")
-        claude_cmd = [
-            "claude",
-            "-p",
-            "--model",
-            task.model,
-            "--dangerously-skip-permissions",
-            "--output-format",
-            "json",
-            "--",
-            task.prompt,
-        ]
-        claude_result = _run(
-            claude_cmd,
-            cwd=worktree_path,
-            logger=logger,
-            timeout=1800,
-            env=claude_env,
+        # Run the configured agent (30 min timeout per task).
+        agent_result = _run_agent_task(
+            task,
+            worktree_path,
+            logger,
+            env=agent_env,
         )
-        logger.info(f"Claude exit code: {claude_result.returncode}")
-        claude_envelope_stdout = claude_result.stdout
+        logger.info(f"{task.agent} exit code: {agent_result.returncode}")
+        if task.agent == "claude":
+            claude_envelope_stdout = agent_result.stdout
 
-        if claude_result.returncode != 0:
-            raise RuntimeError(f"claude exited with code {claude_result.returncode}")
+        if agent_result.returncode != 0:
+            raise RuntimeError(
+                f"{task.agent} exited with code {agent_result.returncode}"
+            )
 
         if task.fact_check:
             _run_fact_check_loop(task, worktree_path, logger)
@@ -625,7 +672,7 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
             logger=logger,
         )
         uncommitted_files = [f for f in wt_diff.stdout.strip().splitlines() if f]
-        # Find new untracked files claude created
+        # Find new untracked files the agent created
         post_untracked = _run(
             ["git", "ls-files", "--others", "--exclude-standard"],
             cwd=worktree_path,
@@ -719,7 +766,7 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
                     pr_url = result.stdout.strip()
                     logger.info(f"PR created: {pr_url}")
         elif not has_changes:
-            logger.info("No changes made by claude.")
+            logger.info(f"No changes made by {task.agent}.")
 
         outcome = {"result": "success"}
         if pr_url:

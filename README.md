@@ -150,7 +150,11 @@ nightowl uninstall
 | `name` | yes | | Human-readable name for logs and PR titles |
 | `interval` | yes | | Minimum time between runs (`12h`, `24h`, `7d`) |
 | `output` | no | `pr` | What to do with changes: `pr`, `commit`, or `none` |
-| `prompt` | yes | | The prompt sent to Claude Code |
+| `prompt` | yes | | The task prompt |
+| `agent` | no | `claude` | Task runner: `claude` or `codex` |
+| `model` | no | `claude-opus-4-6` | Claude model, including PR metadata and fact-check fixes |
+| `codex_model` | no | CLI configuration | Codex model for the main task (for example, `gpt-5.6-sol`); set in task Markdown frontmatter |
+| `codex_reasoning_effort` | no | `low` | Codex reasoning effort: `minimal`, `low`, `medium`, or `high` |
 
 ### Output modes
 

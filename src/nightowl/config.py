@@ -87,6 +87,9 @@ SKIP_IF_OPEN_TYPES = ("pr-branch-prefix", "issue-label", "issue-title")
 # ``model:``. Kept at opus-4-6 so existing tasks behave exactly as before;
 # per-task ``model:`` overrides this to a cheaper tier (e.g. sonnet/haiku).
 DEFAULT_MODEL = "claude-opus-4-6"
+AGENTS = ("claude", "codex")
+CODEX_REASONING_EFFORTS = ("minimal", "low", "medium", "high")
+DEFAULT_CODEX_REASONING_EFFORT = "low"
 
 
 class SkipIfOpenCheck:
@@ -133,6 +136,9 @@ class Task:
         fact_check: bool = False,
         skip_if_open: list[SkipIfOpenCheck] | None = None,
         model: str = DEFAULT_MODEL,
+        agent: str = "claude",
+        codex_reasoning_effort: str = DEFAULT_CODEX_REASONING_EFFORT,
+        codex_model: str | None = None,
     ):
         self.id = id
         self.name = name
@@ -145,6 +151,24 @@ class Task:
         self.output = output
         self.fact_check = fact_check
         self.skip_if_open = skip_if_open or []
+        if agent not in AGENTS:
+            raise ValueError(
+                f"Invalid agent: {agent!r}. Must be one of: {', '.join(AGENTS)}."
+            )
+        self.agent = agent
+        if codex_reasoning_effort not in CODEX_REASONING_EFFORTS:
+            raise ValueError(
+                f"Invalid codex_reasoning_effort: {codex_reasoning_effort!r}. "
+                f"Must be one of: {', '.join(CODEX_REASONING_EFFORTS)}."
+            )
+        self.codex_reasoning_effort = codex_reasoning_effort
+        if codex_model is not None and (
+            not isinstance(codex_model, str) or not codex_model.strip()
+        ):
+            raise ValueError(
+                f"Invalid codex_model: {codex_model!r}. Must be a non-empty string."
+            )
+        self.codex_model = codex_model
         if not isinstance(model, str) or not model.strip():
             raise ValueError(f"Invalid model: {model!r}. Must be a non-empty string.")
         self.model = model
@@ -258,6 +282,11 @@ def _load_task(path: Path) -> Task:
         fact_check=bool(fm.get("fact_check", False)),
         skip_if_open=_parse_skip_if_open(fm.get("skip_if_open"), source=path.name),
         model=fm.get("model") or DEFAULT_MODEL,
+        agent=fm.get("agent", "claude"),
+        codex_model=fm.get("codex_model"),
+        codex_reasoning_effort=fm.get(
+            "codex_reasoning_effort", DEFAULT_CODEX_REASONING_EFFORT
+        ),
     )
 
 
@@ -306,8 +335,10 @@ def load_config(path: Path | None = None) -> Config:
       optional `skip_weekdays` (list of weekday names). Body is ignored.
     - `<task-id>.md`: one per task. Frontmatter has `name`, `interval`, and
       optional `output` (default "pr"), `fact_check` (default false),
-      `model` (default `DEFAULT_MODEL`; set to a cheaper tier to control
-      cost), and
+      `agent` (default "claude"), `model` (default `DEFAULT_MODEL`; set to
+      a cheaper Claude tier to control cost), `codex_reasoning_effort`
+      (default "low"), `codex_model` (default none; uses the Codex CLI
+      configured model), and
       `skip_if_open` (default none — a list of artifact-existence checks
       that, if any matches, skips the run; see ``SkipIfOpenCheck``). The
       markdown body is the task prompt. The filename stem becomes the task id.
