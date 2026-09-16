@@ -479,6 +479,16 @@ def _run_agent_task(
     env: dict[str, str],
 ) -> subprocess.CompletedProcess:
     """Run the configured task agent in a non-interactive launchd-safe mode."""
+    prompt = task.prompt
+    if env.get("NIGHTOWL_MONITORING_BACKEND") == "healthchecks":
+        prompt += (
+            "\n\nOperational monitoring policy (overrides task instructions to email "
+            "operational status): Healthchecks reports Nightowl failures and scheduler "
+            "health. Do not send ad hoc email or Pushover notifications for these. "
+            "Record operational findings in run output or the task PR. Substantive "
+            "deliverables such as newsletter drafts and content or review findings "
+            "are unaffected.\n"
+        )
     if task.agent == "claude":
         logger.info("Running claude...")
         return _run(
@@ -491,7 +501,7 @@ def _run_agent_task(
                 "--output-format",
                 "json",
                 "--",
-                task.prompt,
+                prompt,
             ],
             cwd=project_dir,
             logger=logger,
@@ -514,7 +524,7 @@ def _run_agent_task(
         ]
         if task.codex_model is not None:
             cmd.extend(["--model", task.codex_model])
-        cmd.extend(["--", task.prompt])
+        cmd.extend(["--", prompt])
         return _run(
             cmd,
             cwd=project_dir,

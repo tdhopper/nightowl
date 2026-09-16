@@ -18,6 +18,7 @@ swallowed so a Pushover outage doesn't fail the whole ``nightowl run``.
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -89,6 +90,11 @@ def send_failure_notification(
     non-2xx response are all logged and swallowed. Notifications are
     observability, not a barrier to the run completing.
     """
+    if (
+        os.environ.get("NIGHTOWL_DISABLE_PUSHOVER") == "1"
+        or os.environ.get("NIGHTOWL_MONITORING_BACKEND") == "healthchecks"
+    ):
+        return False
     failed = [r for r in runs if r.get("result") == "failure"]
     if not failed:
         logger.debug("No failed tasks this invocation; skipping Pushover push.")
