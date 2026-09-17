@@ -44,3 +44,20 @@ Reports transmit only fixed status labels. They never transmit task errors,
 credential URLs, or response bodies to logs. HTTP redirects are refused; only
 HTTP 200 with exact body `OK` counts as delivery. Delivery failures exit nonzero.
 A dry report prints current statuses without pinging or modifying the cache.
+
+## Recognize blocked agent work
+
+Codex tasks return a structured `completed`, `blocked`, or `failed` outcome.
+A zero process exit code alone does not mean success. Missing or invalid outcomes
+fail the task, while a verified finding that no change is needed may succeed.
+Fact-check process failures and invalid verdicts also fail the task.
+
+Codex runs in `workspace-write` with network access enabled for GitHub, package
+registries, and source verification. Each task can write its `NIGHTOWL_STATE_DIR`.
+Set `NIGHTOWL_WRITABLE_DIRS` to an OS-path-separator-delimited list of additional
+absolute, existing directories when tasks need persistent caches. On dobro,
+the handbook scheduler grants `/Users/thopper/.cache/uv` and
+`/Users/thopper/.local/state/pydevtools-handbook`.
+
+Verify deployments with dependency access from inside the deployed sandbox and
+an affected task retry. A model response alone does not verify operational access.

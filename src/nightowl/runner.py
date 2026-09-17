@@ -41,6 +41,7 @@ def _run(
     timeout: int | None = None,
     env: dict[str, str] | None = None,
     stdin=None,
+    log_output: bool = True,
 ) -> subprocess.CompletedProcess:
     logger.debug(f"Running: {' '.join(cmd)}")
     try:
@@ -56,9 +57,9 @@ def _run(
     except subprocess.TimeoutExpired:
         logger.error(f"Command timed out after {timeout}s: {' '.join(cmd)}")
         raise
-    if result.stdout:
+    if log_output and result.stdout:
         logger.debug(result.stdout.rstrip())
-    if result.stderr:
+    if log_output and result.stderr:
         logger.debug(result.stderr.rstrip())
     return result
 
@@ -204,51 +205,45 @@ def _run_codex_fact_check(
     )
 
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            suffix=".txt",
-            delete=False,
-        ) as tmp:
-            tmp_path = tmp.name
-
-        result = _run(
-            [
-                "codex",
-                "exec",
-                "--ephemeral",
-                "-o",
-                tmp_path,
-                "-C",
-                str(project_dir),
-                prompt,
-            ],
-            cwd=project_dir,
-            logger=logger,
-            timeout=300,
-        )
-
-        if result.returncode != 0:
-            logger.warning(
-                f"Codex exited with code {result.returncode}, treating as pass"
+        with tempfile.TemporaryDirectory(prefix="nightowl-factcheck-") as directory:
+            output_path = Path(directory) / "verdict.txt"
+            result = _run(
+                [
+                    "codex",
+                    "exec",
+                    "--ephemeral",
+                    "--disable",
+                    "hooks",
+                    "-s",
+                    "workspace-write",
+                    "-c",
+                    "sandbox_workspace_write.network_access=true",
+                    *_codex_writable_args(dict(os.environ)),
+                    "-o",
+                    str(output_path),
+                    "-C",
+                    str(project_dir),
+                    prompt,
+                ],
+                cwd=project_dir,
+                logger=logger,
+                timeout=300,
+                stdin=subprocess.DEVNULL,
+                log_output=False,
             )
-            return (True, "")
-
-        output = Path(tmp_path).read_text().strip()
-        logger.debug(f"Codex output: {output}")
-
-        if "VERDICT: PASS" in output:
-            return (True, "")
-        elif "VERDICT: ISSUES FOUND" in output:
-            return (False, output)
-        else:
-            logger.warning(
-                "Codex output did not contain a recognized verdict, treating as pass"
-            )
-            return (True, "")
-
-    except (subprocess.TimeoutExpired, Exception) as e:
-        logger.warning(f"Codex fact-check failed ({e}), treating as pass")
-        return (True, "")
+            if result.returncode != 0:
+                raise RuntimeError("Codex fact-check process failed")
+            output = output_path.read_text().strip()
+            if output == "VERDICT: PASS":
+                return (True, "")
+            if (
+                output.startswith("VERDICT: ISSUES FOUND\n")
+                and output.split("\n", 1)[1].strip()
+            ):
+                return (False, output)
+            raise RuntimeError("Codex fact-check did not return a valid verdict")
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError("Codex fact-check could not complete") from error
 
 
 def _run_fact_check_loop(
@@ -256,7 +251,7 @@ def _run_fact_check_loop(
     project_dir: Path,
     logger: Logger,
 ) -> None:
-    """Run up to 3 rounds of Codex fact-checking, re-invoking Claude to fix issues."""
+    """Verify up to three times, allowing two repairs between verdicts."""
     max_iterations = 3
     state_dir = _task_state_dir(task.id)
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -275,6 +270,9 @@ def _run_fact_check_loop(
         if passed:
             logger.info(f"Fact-check passed on iteration {i}")
             return
+
+        if i == max_iterations:
+            break
 
         logger.info(f"Fact-check found issues on iteration {i}, re-invoking Claude")
 
@@ -303,9 +301,7 @@ def _run_fact_check_loop(
             env=claude_env,
         )
 
-    logger.warning(
-        f"Fact-check did not pass after {max_iterations} iterations, proceeding anyway"
-    )
+    raise RuntimeError(f"Fact-check did not pass after {max_iterations} iterations")
 
 
 def _check_skip_if_open(
@@ -472,6 +468,25 @@ def _cleanup_worktree(
     _run(["git", "branch", "-D", branch], cwd=project_dir, logger=logger)
 
 
+def _codex_writable_args(env: dict[str, str]) -> list[str]:
+    """Grant only explicitly configured existing directories to Codex."""
+    paths = []
+    if env.get("NIGHTOWL_STATE_DIR"):
+        paths.append(env["NIGHTOWL_STATE_DIR"])
+    if "NIGHTOWL_WRITABLE_DIRS" in env:
+        extra = env["NIGHTOWL_WRITABLE_DIRS"].split(os.pathsep)
+        if any(not path.strip() for path in extra):
+            raise ValueError("NIGHTOWL_WRITABLE_DIRS contains an empty entry")
+        paths.extend(extra)
+    args = []
+    for value in dict.fromkeys(paths):
+        path = Path(value)
+        if not path.is_absolute() or not path.is_dir():
+            raise ValueError("Codex writable directories must exist and be absolute")
+        args.extend(["--add-dir", str(path)])
+    return args
+
+
 def _run_agent_task(
     task: Task,
     project_dir: Path,
@@ -521,18 +536,87 @@ def _run_agent_task(
             "workspace-write",
             "-c",
             f'model_reasoning_effort="{task.codex_reasoning_effort}"',
+            "-c",
+            "sandbox_workspace_write.network_access=true",
         ]
+        cmd.extend(_codex_writable_args(env))
         if task.codex_model is not None:
             cmd.extend(["--model", task.codex_model])
-        cmd.extend(["--", prompt])
-        return _run(
-            cmd,
-            cwd=project_dir,
-            logger=logger,
-            timeout=1800,
-            env=env,
-            stdin=subprocess.DEVNULL,
+        prompt += (
+            "\n\nReturn the required structured outcome. Use completed only when "
+            "the requested work and required checks are complete; a verified finding "
+            "that no work is needed also counts as completed. Use blocked when a "
+            "required prerequisite, permission, credential, network service, or tool "
+            "is unavailable. Use failed when attempted work fails. Never report "
+            "completed merely because you explained a blocker. Summarize the result "
+            "briefly without credentials, tokens, or secret URLs."
         )
+        schema = {
+            "type": "object",
+            "properties": {
+                "outcome": {
+                    "type": "string",
+                    "enum": ["completed", "blocked", "failed"],
+                },
+                "summary": {"type": "string"},
+            },
+            "required": ["outcome", "summary"],
+            "additionalProperties": False,
+        }
+        with tempfile.TemporaryDirectory(prefix="nightowl-outcome-") as directory:
+            schema_path = Path(directory) / "schema.json"
+            output_path = Path(directory) / "outcome.json"
+            schema_path.write_text(json.dumps(schema))
+            cmd.extend(
+                [
+                    "--output-schema",
+                    str(schema_path),
+                    "--output-last-message",
+                    str(output_path),
+                    "--",
+                    prompt,
+                ]
+            )
+            result = _run(
+                cmd,
+                cwd=project_dir,
+                logger=logger,
+                timeout=1800,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                log_output=False,
+            )
+            if result.returncode != 0:
+                return result
+            try:
+                payload = json.loads(output_path.read_text())
+                if (
+                    not isinstance(payload, dict)
+                    or set(payload) != {"outcome", "summary"}
+                    or payload["outcome"] not in ("completed", "blocked", "failed")
+                    or not isinstance(payload["summary"], str)
+                    or not payload["summary"].strip()
+                ):
+                    raise ValueError("invalid outcome")
+                outcome = payload["outcome"]
+            except (OSError, ValueError, TypeError):
+                outcome = "invalid-output"
+            # Do not put free-form agent output in operational logs: it may contain
+            # credentials despite the prompt. Fixed summaries make failures safe.
+            summaries = {
+                "completed": "Codex confirmed the requested work is complete.",
+                "blocked": "Codex reported an unavailable prerequisite.",
+                "failed": "Codex reported that the requested work failed.",
+                "invalid-output": "Codex did not return a valid structured outcome.",
+            }
+            summary = summaries[outcome]
+            logger.info("Codex outcome %s: %s", outcome, summary)
+            return subprocess.CompletedProcess(
+                result.args,
+                0 if outcome == "completed" else 1,
+                stdout=summary,
+                stderr="" if outcome == "completed" else summary,
+            )
 
     raise ValueError(f"Unsupported task agent: {task.agent!r}")
 
@@ -660,6 +744,13 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
             claude_envelope_stdout = agent_result.stdout
 
         if agent_result.returncode != 0:
+            safe_failures = {
+                "Codex reported an unavailable prerequisite.",
+                "Codex reported that the requested work failed.",
+                "Codex did not return a valid structured outcome.",
+            }
+            if task.agent == "codex" and agent_result.stderr in safe_failures:
+                raise RuntimeError(agent_result.stderr)
             raise RuntimeError(
                 f"{task.agent} exited with code {agent_result.returncode}"
             )
