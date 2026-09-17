@@ -141,3 +141,47 @@ def test_factchecker_missing_verdict_fails(tmp_path, output):
     with patch("nightowl.runner.subprocess.run", side_effect=invoke):
         with pytest.raises(RuntimeError, match="valid verdict"):
             runner._run_codex_fact_check("diff", tmp_path, logging.getLogger("test"))
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_private_outcome_replaces_stale_result(tmp_path, valid, caplog):
+    destination = tmp_path / "last-codex-outcome.json"
+    destination.write_text(
+        json.dumps({"outcome": "completed", "summary": "Old result"})
+    )
+    destination.chmod(0o644)
+    payload = {"outcome": "blocked", "summary": "Specific private prerequisite detail."}
+
+    def invoke(cmd, **kwargs):
+        current = json.loads(destination.read_text())
+        assert current["outcome"] == "failed"
+        assert destination.stat().st_mode & 0o777 == 0o600
+        Path(cmd[cmd.index("--output-last-message") + 1]).write_text(
+            json.dumps(payload) if valid else "invalid"
+        )
+        return subprocess.CompletedProcess(cmd, 0, "private transcript", "")
+
+    task = Task("task", "Task", timedelta(days=1), "Do work.", agent="codex")
+    with (
+        patch("nightowl.runner.subprocess.run", side_effect=invoke),
+        caplog.at_level(logging.DEBUG),
+    ):
+        runner._run_agent_task(
+            task,
+            tmp_path,
+            logging.getLogger("test"),
+            {"NIGHTOWL_STATE_DIR": str(tmp_path)},
+        )
+    saved = json.loads(destination.read_text())
+    assert saved == (
+        payload
+        if valid
+        else {
+            "outcome": "failed",
+            "summary": "Codex did not return a valid structured outcome.",
+        }
+    )
+    assert destination.stat().st_mode & 0o777 == 0o600
+    assert payload["summary"] not in caplog.text
+    assert "private transcript" not in destination.read_text()
+    assert not list(tmp_path.glob(".codex-outcome-*"))

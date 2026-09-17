@@ -487,6 +487,20 @@ def _codex_writable_args(env: dict[str, str]) -> list[str]:
     return args
 
 
+def _save_codex_outcome(env: dict[str, str], payload: dict) -> None:
+    """Retain only the structured result privately, replacing stale diagnostics."""
+    if not env.get("NIGHTOWL_STATE_DIR"):
+        return
+    destination = Path(env["NIGHTOWL_STATE_DIR"]) / "last-codex-outcome.json"
+    fd, temporary = tempfile.mkstemp(dir=destination.parent, prefix=".codex-outcome-")
+    try:
+        with os.fdopen(fd, "w") as stream:
+            json.dump(payload, stream)
+        os.replace(temporary, destination)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
 def _run_agent_task(
     task: Task,
     project_dir: Path,
@@ -577,6 +591,13 @@ def _run_agent_task(
                     prompt,
                 ]
             )
+            _save_codex_outcome(
+                env,
+                {
+                    "outcome": "failed",
+                    "summary": "No validated outcome received for the current invocation.",
+                },
+            )
             result = _run(
                 cmd,
                 cwd=project_dir,
@@ -610,6 +631,12 @@ def _run_agent_task(
                 "invalid-output": "Codex did not return a valid structured outcome.",
             }
             summary = summaries[outcome]
+            _save_codex_outcome(
+                env,
+                {"outcome": "failed", "summary": summary}
+                if outcome == "invalid-output"
+                else payload,
+            )
             logger.info("Codex outcome %s: %s", outcome, summary)
             return subprocess.CompletedProcess(
                 result.args,
