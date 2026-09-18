@@ -21,6 +21,13 @@ are recorded. The scheduler fails on a missing receipt, unsuccessful exit,
 completed receipt older than 90 minutes, or a running invocation older than
 12 hours. SIGTERM, SIGINT, and SIGHUP are forwarded to the child process group.
 
+Have the monitored launcher invoke `nightowl run --scheduler-health`. This makes
+a completed dispatch exit successfully even when a task fails; per-task checks
+report those failures. Configuration errors, interrupted dispatches, and failed
+state or history writes still fail the scheduler. Without this flag, `nightowl run`
+exits nonzero when any task fails. Dobro's `run-handbook-nightowl` launcher forwards
+arguments after the project path to `nightowl run`.
+
 Task failures remain unhealthy through skips and idle scheduler invocations until
 that task succeeds. History and a private terminal-result cache preserve failures.
 A running task gets three hours before a timeout. Overdue tasks get their configured
@@ -61,3 +68,15 @@ the handbook scheduler grants `/Users/thopper/.cache/uv` and
 
 Verify deployments with dependency access from inside the deployed sandbox and
 an affected task retry. A model response alone does not verify operational access.
+
+## Hand validated files to the publisher
+
+Codex leaves validated edits in the task worktree. Nightowl owns staging, commits,
+pushes, and PR creation because sandbox Git metadata is read-only. Tasks prepare
+`pr_title.txt` and `pr_body.md` in `NIGHTOWL_STATE_DIR` for required PR content.
+A completed agent handoff still fails if Nightowl cannot publish it.
+
+If an older task already published an independent commit through GitHub, a rejected
+push is accepted only after fetching that exact branch and matching its complete
+file tree to the validated local commit. Different content remains a failure;
+Nightowl never force-pushes to resolve this conflict.

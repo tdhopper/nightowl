@@ -35,7 +35,12 @@ def main():
     help="Run a single task by id, skipping interval check.",
 )
 @click.option("--dry-run", is_flag=True, help="Show eligible tasks without executing.")
-def run(task_id: str | None, dry_run: bool):
+@click.option(
+    "--scheduler-health",
+    is_flag=True,
+    help="Report dispatch health in the exit code; monitor task failures separately.",
+)
+def run(task_id: str | None, dry_run: bool, scheduler_health: bool):
     """Run eligible tasks."""
     logger = setup_logging()
     try:
@@ -118,7 +123,9 @@ def run(task_id: str | None, dry_run: bool):
         # ``run_records`` with a failure still alerts.
         send_failure_notification(run_records, logger, project_dir=project_path)
 
-    if any_failed:
+    # Per-task monitors report recorded failures. A completed dispatch stays healthy;
+    # exceptions before this point still fail the scheduler invocation.
+    if any_failed and not scheduler_health:
         sys.exit(1)
 
 

@@ -501,6 +501,37 @@ def _save_codex_outcome(env: dict[str, str], payload: dict) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
+def _push_branch(project_dir: Path, branch: str, logger: Logger) -> None:
+    """Publish, or recognize an identical tree already published by the agent."""
+    pushed = _run(
+        ["git", "push", "-u", "origin", branch], cwd=project_dir, logger=logger
+    )
+    if pushed.returncode == 0:
+        return
+    # Agents sometimes publish through the GitHub API because their Git metadata
+    # is read-only. Independent commits may then contain exactly the same files.
+    fetched = _run(
+        ["git", "fetch", "--no-tags", "origin", f"refs/heads/{branch}"],
+        cwd=project_dir,
+        logger=logger,
+    )
+    if fetched.returncode == 0:
+        local = _run(
+            ["git", "rev-parse", "HEAD^{tree}"], cwd=project_dir, logger=logger
+        )
+        remote = _run(
+            ["git", "rev-parse", "FETCH_HEAD^{tree}"], cwd=project_dir, logger=logger
+        )
+        if (
+            local.returncode == remote.returncode == 0
+            and local.stdout.strip()
+            and local.stdout.strip() == remote.stdout.strip()
+        ):
+            logger.info("Remote branch already contains the exact validated file tree")
+            return
+    raise RuntimeError(f"git push failed: {pushed.stderr}")
+
+
 def _run_agent_task(
     task: Task,
     project_dir: Path,
@@ -540,6 +571,25 @@ def _run_agent_task(
 
     if task.agent == "codex":
         logger.info("Running codex...")
+        if task.output in ("pr", "commit"):
+            prompt += (
+                "\n\nNightowl publication handoff (overrides task and repository "
+                "instructions to commit, push, or create a PR): Git metadata is "
+                "intentionally read-only inside this sandbox. The Nightowl runner "
+                "owns staging, committing, pushing, and PR creation after you return. "
+                "Do not attempt those operations, create another checkout, or publish "
+                "through the GitHub API as a workaround. Complete the requested "
+                "file changes and all validation, then leave the validated edits in "
+                "this worktree. Do not restore them just because Git writes are "
+                "unavailable. For PR output, write the full required PR description "
+                "to $NIGHTOWL_STATE_DIR/pr_body.md and its title to "
+                "$NIGHTOWL_STATE_DIR/pr_title.txt. Include required preview links "
+                "and issue references. Report completed when the validated files "
+                "and publication handoff are ready; the runner separately verifies "
+                "publication before recording task success. Read-only Git/GitHub "
+                "inspection remains available. Real validation or prerequisite "
+                "failures must still report blocked or failed."
+            )
         cmd = [
             "codex",
             "exec",
@@ -793,9 +843,9 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
         )
         commits_ahead = int(rev_list.stdout.strip() or "0")
 
-        # Find uncommitted working-tree changes (unstaged tracked files)
+        # Include staged and unstaged tracked changes.
         wt_diff = _run(
-            ["git", "diff", "--name-only"],
+            ["git", "diff", "HEAD", "--name-only"],
             cwd=worktree_path,
             logger=logger,
         )
@@ -836,13 +886,7 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
                 logger.info("Claude already committed all changes, skipping add/commit")
 
             # Push
-            result = _run(
-                ["git", "push", "-u", "origin", branch],
-                cwd=worktree_path,
-                logger=logger,
-            )
-            if result.returncode != 0:
-                raise RuntimeError(f"git push failed: {result.stderr}")
+            _push_branch(worktree_path, branch, logger)
 
             # Create PR if output is pr
             if task.output == "pr":

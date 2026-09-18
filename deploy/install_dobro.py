@@ -23,6 +23,13 @@ shutil.copy2(source, backup / source.name)
 python = str(home / ".local/share/uv/tools/nightowl/bin/python")
 config = str(home / ".config/nightowl/healthchecks-handbook.json")
 plist = plistlib.loads(source.read_bytes())
+launcher_args = plist["ProgramArguments"]
+if Path(launcher_args[0]).name != "run-handbook-nightowl":
+    raise SystemExit(
+        "Expected run-handbook-nightowl launcher for scheduler health mode."
+    )
+if "--scheduler-health" not in launcher_args:
+    launcher_args.append("--scheduler-health")
 plist["ProgramArguments"] = [
     python,
     "-m",
@@ -31,7 +38,7 @@ plist["ProgramArguments"] = [
     "--config",
     config,
     "--",
-    *plist["ProgramArguments"],
+    *launcher_args,
 ]
 plist["EnvironmentVariables"]["NIGHTOWL_MONITORING_BACKEND"] = "healthchecks"
 subprocess.run(["launchctl", "bootout", domain + "/" + label], check=True)

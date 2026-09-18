@@ -11,8 +11,14 @@ from nightowl.cli import main
 
 @pytest.fixture(autouse=True)
 def tmp_state(tmp_path, monkeypatch):
-    """Isolate state writes from the real state.json for every CLI test."""
+    """Keep CLI state, history, logs, and notifications isolated from the user."""
+    from nightowl import logging as nightowl_logging
+    from nightowl import runs
+
     monkeypatch.setattr(state, "STATE_PATH", tmp_path / "cli-state.json")
+    monkeypatch.setattr(runs, "RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(nightowl_logging, "LOG_DIR", tmp_path / "logs")
+    monkeypatch.setenv("NIGHTOWL_DISABLE_PUSHOVER", "1")
 
 
 @pytest.fixture(autouse=True)
@@ -325,3 +331,72 @@ class TestCliRunWiresObservability:
             # Failed task -> exit 1, and push was attempted.
             assert result.exit_code == 1
             mock_push.assert_called_once()
+
+
+class TestSchedulerHealth:
+    @pytest.fixture(autouse=True)
+    def isolate_observability(self, tmp_path, monkeypatch):
+        from nightowl import runs
+
+        monkeypatch.setattr(runs, "RUNS_ROOT", tmp_path / "runs")
+        monkeypatch.setattr(
+            "nightowl.cli.send_failure_notification", lambda *a, **k: None
+        )
+
+    @pytest.mark.parametrize("flags,expected", [([], 1), (["--scheduler-health"], 0)])
+    def test_failed_batch_and_idle_dispatch(self, tmp_path, flags, expected):
+        from nightowl import runs
+
+        runner = CliRunner()
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            _write_project()
+            (Path("nightowl") / "second-task.md").write_text(TASK)
+            records = [
+                {"task_id": "second-task", "result": "success"},
+                {"task_id": "test-task", "result": "failure"},
+            ]
+            with patch("nightowl.cli.run_task", side_effect=records) as invoke:
+                result = runner.invoke(main, ["run", *flags])
+                assert result.exit_code == expected, result.output
+                assert invoke.call_count == 2
+                assert runs.read_runs(str(Path.cwd())) == records
+                task_state = state.get_task_state(str(Path.cwd()), "test-task")
+                assert task_state is not None and task_state["result"] == "failure"
+                idle = runner.invoke(main, ["run", *flags])
+                assert idle.exit_code == 0, idle.output
+                assert invoke.call_count == 2
+                task_state = state.get_task_state(str(Path.cwd()), "test-task")
+                assert task_state is not None and task_state["result"] == "failure"
+
+    @pytest.mark.parametrize(
+        "operation",
+        ["run_task", "record_task_result", "append_run", "get_all_task_states"],
+    )
+    def test_infrastructure_exception_still_fails(self, tmp_path, operation):
+        runner = CliRunner()
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            _write_project()
+            with (
+                patch("nightowl.cli.run_task", return_value={"result": "failure"}),
+                patch(f"nightowl.cli.{operation}", side_effect=RuntimeError("broken")),
+            ):
+                result = runner.invoke(main, ["run", "--scheduler-health"])
+            assert result.exit_code != 0
+            assert isinstance(result.exception, RuntimeError)
+
+    def test_missing_configuration_still_fails(self, tmp_path):
+        runner = CliRunner()
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            result = runner.invoke(main, ["run", "--scheduler-health"])
+            assert result.exit_code == 1
+            assert "nightowl config directory not found" in result.output
+
+    def test_unknown_task_still_fails(self, tmp_path):
+        runner = CliRunner()
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            _write_project()
+            result = runner.invoke(
+                main, ["run", "--scheduler-health", "--task", "missing"]
+            )
+            assert result.exit_code == 1
+            assert "not found" in result.output
