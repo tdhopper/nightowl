@@ -139,6 +139,9 @@ class Task:
         agent: str = "claude",
         codex_reasoning_effort: str = DEFAULT_CODEX_REASONING_EFFORT,
         codex_model: str | None = None,
+        git_write: bool = False,
+        pr_labels: list[str] | None = None,
+        require_pr: bool = False,
     ):
         self.id = id
         self.name = name
@@ -169,6 +172,24 @@ class Task:
                 f"Invalid codex_model: {codex_model!r}. Must be a non-empty string."
             )
         self.codex_model = codex_model
+        if not isinstance(git_write, bool):
+            raise ValueError("git_write must be a boolean.")
+        if git_write and (agent != "codex" or output != "none"):
+            raise ValueError("git_write requires a Codex task with output: none.")
+        self.git_write = git_write
+        if pr_labels is not None and (
+            not isinstance(pr_labels, list)
+            or any(
+                not isinstance(label, str) or not label.strip() for label in pr_labels
+            )
+        ):
+            raise ValueError("pr_labels must be a list of non-empty strings.")
+        self.pr_labels = pr_labels or []
+        if not isinstance(require_pr, bool):
+            raise ValueError("require_pr must be a boolean.")
+        if require_pr and not git_write:
+            raise ValueError("require_pr requires git_write: true.")
+        self.require_pr = require_pr
         if not isinstance(model, str) or not model.strip():
             raise ValueError(f"Invalid model: {model!r}. Must be a non-empty string.")
         self.model = model
@@ -284,6 +305,9 @@ def _load_task(path: Path) -> Task:
         model=fm.get("model") or DEFAULT_MODEL,
         agent=fm.get("agent", "claude"),
         codex_model=fm.get("codex_model"),
+        git_write=fm.get("git_write", False),
+        pr_labels=fm.get("pr_labels"),
+        require_pr=fm.get("require_pr", False),
         codex_reasoning_effort=fm.get(
             "codex_reasoning_effort", DEFAULT_CODEX_REASONING_EFFORT
         ),
@@ -339,6 +363,9 @@ def load_config(path: Path | None = None) -> Config:
       a cheaper Claude tier to control cost), `codex_reasoning_effort`
       (default "low"), `codex_model` (default none; uses the Codex CLI
       configured model), and
+      `git_write` (default false; grants Codex Git metadata writes for
+      `output: none` tasks), `pr_labels` (labels for new PRs),
+      `require_pr` (verify a direct-publishing task opened a draft PR), and
       `skip_if_open` (default none — a list of artifact-existence checks
       that, if any matches, skips the run; see ``SkipIfOpenCheck``). The
       markdown body is the task prompt. The filename stem becomes the task id.

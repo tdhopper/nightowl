@@ -41,6 +41,7 @@ def _run(
     timeout: int | None = None,
     env: dict[str, str] | None = None,
     stdin=None,
+    log_output: bool = True,
 ) -> subprocess.CompletedProcess:
     logger.debug(f"Running: {' '.join(cmd)}")
     try:
@@ -56,9 +57,9 @@ def _run(
     except subprocess.TimeoutExpired:
         logger.error(f"Command timed out after {timeout}s: {' '.join(cmd)}")
         raise
-    if result.stdout:
+    if log_output and result.stdout:
         logger.debug(result.stdout.rstrip())
-    if result.stderr:
+    if log_output and result.stderr:
         logger.debug(result.stderr.rstrip())
     return result
 
@@ -84,16 +85,24 @@ def _generate_pr_metadata(
     title_override = state_dir / "pr_title.txt"
     body_override = state_dir / "pr_body.md"
 
+    if task.agent == "codex" and (
+        not title_override.is_file() or not body_override.is_file()
+    ):
+        raise RuntimeError("Codex task did not provide PR title and body")
+
     if body_override.is_file():
         logger.info(f"Using task-provided PR body: {body_override}")
-        body = body_override.read_text().rstrip() + "\n\n---\n*Automated by nightowl*"
+        body = body_override.read_text().strip()
         if title_override.is_file():
-            title = title_override.read_text().strip().splitlines()[0]
+            title_text = title_override.read_text().strip()
+            title = title_text.splitlines()[0] if title_text else ""
             title_override.unlink()
         else:
             title = task.name
+        if not title or not body:
+            raise RuntimeError("Task provided an empty PR title or body")
         body_override.unlink()
-        return title, body
+        return title, body + "\n\n---\n*Automated by nightowl*"
 
     diff_result = _run(
         ["git", "diff", "origin/main", "--stat"],
@@ -204,51 +213,45 @@ def _run_codex_fact_check(
     )
 
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            suffix=".txt",
-            delete=False,
-        ) as tmp:
-            tmp_path = tmp.name
-
-        result = _run(
-            [
-                "codex",
-                "exec",
-                "--ephemeral",
-                "-o",
-                tmp_path,
-                "-C",
-                str(project_dir),
-                prompt,
-            ],
-            cwd=project_dir,
-            logger=logger,
-            timeout=300,
-        )
-
-        if result.returncode != 0:
-            logger.warning(
-                f"Codex exited with code {result.returncode}, treating as pass"
+        with tempfile.TemporaryDirectory(prefix="nightowl-factcheck-") as directory:
+            output_path = Path(directory) / "verdict.txt"
+            result = _run(
+                [
+                    "codex",
+                    "exec",
+                    "--ephemeral",
+                    "--disable",
+                    "hooks",
+                    "-s",
+                    "workspace-write",
+                    "-c",
+                    "sandbox_workspace_write.network_access=true",
+                    *_codex_writable_args(dict(os.environ)),
+                    "-o",
+                    str(output_path),
+                    "-C",
+                    str(project_dir),
+                    prompt,
+                ],
+                cwd=project_dir,
+                logger=logger,
+                timeout=300,
+                stdin=subprocess.DEVNULL,
+                log_output=False,
             )
-            return (True, "")
-
-        output = Path(tmp_path).read_text().strip()
-        logger.debug(f"Codex output: {output}")
-
-        if "VERDICT: PASS" in output:
-            return (True, "")
-        elif "VERDICT: ISSUES FOUND" in output:
-            return (False, output)
-        else:
-            logger.warning(
-                "Codex output did not contain a recognized verdict, treating as pass"
-            )
-            return (True, "")
-
-    except (subprocess.TimeoutExpired, Exception) as e:
-        logger.warning(f"Codex fact-check failed ({e}), treating as pass")
-        return (True, "")
+            if result.returncode != 0:
+                raise RuntimeError("Codex fact-check process failed")
+            output = output_path.read_text().strip()
+            if output == "VERDICT: PASS":
+                return (True, "")
+            if (
+                output.startswith("VERDICT: ISSUES FOUND\n")
+                and output.split("\n", 1)[1].strip()
+            ):
+                return (False, output)
+            raise RuntimeError("Codex fact-check did not return a valid verdict")
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError("Codex fact-check could not complete") from error
 
 
 def _run_fact_check_loop(
@@ -256,7 +259,7 @@ def _run_fact_check_loop(
     project_dir: Path,
     logger: Logger,
 ) -> None:
-    """Run up to 3 rounds of Codex fact-checking, re-invoking Claude to fix issues."""
+    """Verify up to three times, allowing two repairs between verdicts."""
     max_iterations = 3
     state_dir = _task_state_dir(task.id)
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -275,6 +278,9 @@ def _run_fact_check_loop(
         if passed:
             logger.info(f"Fact-check passed on iteration {i}")
             return
+
+        if i == max_iterations:
+            break
 
         logger.info(f"Fact-check found issues on iteration {i}, re-invoking Claude")
 
@@ -303,9 +309,7 @@ def _run_fact_check_loop(
             env=claude_env,
         )
 
-    logger.warning(
-        f"Fact-check did not pass after {max_iterations} iterations, proceeding anyway"
-    )
+    raise RuntimeError(f"Fact-check did not pass after {max_iterations} iterations")
 
 
 def _check_skip_if_open(
@@ -472,6 +476,133 @@ def _cleanup_worktree(
     _run(["git", "branch", "-D", branch], cwd=project_dir, logger=logger)
 
 
+def _codex_writable_args(env: dict[str, str]) -> list[str]:
+    """Grant only explicitly configured existing directories to Codex."""
+    paths = []
+    if env.get("NIGHTOWL_STATE_DIR"):
+        paths.append(env["NIGHTOWL_STATE_DIR"])
+    if "NIGHTOWL_WRITABLE_DIRS" in env:
+        extra = env["NIGHTOWL_WRITABLE_DIRS"].split(os.pathsep)
+        if any(not path.strip() for path in extra):
+            raise ValueError("NIGHTOWL_WRITABLE_DIRS contains an empty entry")
+        paths.extend(extra)
+    args = []
+    for value in dict.fromkeys(paths):
+        path = Path(value)
+        if not path.is_absolute() or not path.is_dir():
+            raise ValueError("Codex writable directories must exist and be absolute")
+        args.extend(["--add-dir", str(path)])
+    return args
+
+
+def _save_codex_outcome(env: dict[str, str], payload: dict) -> None:
+    """Retain only the structured result privately, replacing stale diagnostics."""
+    if not env.get("NIGHTOWL_STATE_DIR"):
+        return
+    destination = Path(env["NIGHTOWL_STATE_DIR"]) / "last-codex-outcome.json"
+    fd, temporary = tempfile.mkstemp(dir=destination.parent, prefix=".codex-outcome-")
+    try:
+        with os.fdopen(fd, "w") as stream:
+            json.dump(payload, stream)
+        os.replace(temporary, destination)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def _push_branch(project_dir: Path, branch: str, logger: Logger) -> None:
+    """Publish, or recognize an identical tree already published by the agent."""
+    pushed = _run(
+        ["git", "push", "-u", "origin", branch], cwd=project_dir, logger=logger
+    )
+    if pushed.returncode == 0:
+        return
+    # Agents sometimes publish through the GitHub API because their Git metadata
+    # is read-only. Independent commits may then contain exactly the same files.
+    fetched = _run(
+        ["git", "fetch", "--no-tags", "origin", f"refs/heads/{branch}"],
+        cwd=project_dir,
+        logger=logger,
+    )
+    if fetched.returncode == 0:
+        local = _run(
+            ["git", "rev-parse", "HEAD^{tree}"], cwd=project_dir, logger=logger
+        )
+        remote = _run(
+            ["git", "rev-parse", "FETCH_HEAD^{tree}"], cwd=project_dir, logger=logger
+        )
+        if (
+            local.returncode == remote.returncode == 0
+            and local.stdout.strip()
+            and local.stdout.strip() == remote.stdout.strip()
+        ):
+            logger.info("Remote branch already contains the exact validated file tree")
+            return
+    raise RuntimeError(f"git push failed: {pushed.stderr}")
+
+
+def _open_pr(project_dir: Path, branch: str, logger: Logger) -> dict | None:
+    result = _run(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--head",
+            branch,
+            "--state",
+            "open",
+            "--json",
+            "url,isDraft,labels",
+        ],
+        cwd=project_dir,
+        logger=logger,
+        timeout=60,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"gh pr list failed: {result.stderr}")
+    try:
+        prs = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError as error:
+        raise RuntimeError("gh pr list returned invalid JSON") from error
+    if not isinstance(prs, list) or len(prs) > 1:
+        raise RuntimeError("gh pr list returned an unexpected PR set")
+    return prs[0] if prs else None
+
+
+def _check_pr(pr: dict, labels: list[str]) -> str:
+    if not isinstance(pr, dict) or not pr.get("url") or pr.get("isDraft") is not True:
+        raise RuntimeError("Task PR is missing or is not a draft")
+    actual_labels = {label.get("name") for label in pr.get("labels", [])}
+    if not set(labels).issubset(actual_labels):
+        raise RuntimeError("Task PR is missing required labels")
+    return str(pr["url"])
+
+
+def _verify_direct_pr(
+    task: Task, project_dir: Path, branch: str, logger: Logger
+) -> str:
+    """Require a clean, pushed task branch and an open draft PR."""
+    status = _run(["git", "status", "--porcelain"], cwd=project_dir, logger=logger)
+    current = _run(["git", "branch", "--show-current"], cwd=project_dir, logger=logger)
+    head = _run(["git", "rev-parse", "HEAD"], cwd=project_dir, logger=logger)
+    remote = _run(
+        ["git", "ls-remote", "--heads", "origin", branch],
+        cwd=project_dir,
+        logger=logger,
+        timeout=60,
+    )
+    if any(result.returncode != 0 for result in (status, current, head, remote)):
+        raise RuntimeError("Could not verify task branch publication")
+    if status.stdout.strip() or current.stdout.strip() != branch:
+        raise RuntimeError("Task left uncommitted changes or switched branches")
+    remote_sha = remote.stdout.split()[0] if remote.stdout.strip() else None
+    if not remote_sha or remote_sha != head.stdout.strip():
+        raise RuntimeError("Task branch was not pushed at the reviewed commit")
+    pr = _open_pr(project_dir, branch, logger)
+    if pr is None:
+        raise RuntimeError("Task did not open a PR")
+    return _check_pr(pr, task.pr_labels)
+
+
 def _run_agent_task(
     task: Task,
     project_dir: Path,
@@ -479,6 +610,7 @@ def _run_agent_task(
     env: dict[str, str],
 ) -> subprocess.CompletedProcess:
     """Run the configured task agent in a non-interactive launchd-safe mode."""
+    prompt = task.prompt
     if task.agent == "claude":
         logger.info("Running claude...")
         return _run(
@@ -491,7 +623,7 @@ def _run_agent_task(
                 "--output-format",
                 "json",
                 "--",
-                task.prompt,
+                prompt,
             ],
             cwd=project_dir,
             logger=logger,
@@ -501,6 +633,25 @@ def _run_agent_task(
 
     if task.agent == "codex":
         logger.info("Running codex...")
+        if task.output in ("pr", "commit"):
+            prompt += (
+                "\n\nNightowl publication handoff (overrides task and repository "
+                "instructions to commit, push, or create a PR): Git metadata is "
+                "intentionally read-only inside this sandbox. The Nightowl runner "
+                "owns staging, committing, pushing, and PR creation after you return. "
+                "Do not attempt those operations, create another checkout, or publish "
+                "through the GitHub API as a workaround. Complete the requested "
+                "file changes and all validation, then leave the validated edits in "
+                "this worktree. Do not restore them just because Git writes are "
+                "unavailable. For PR output, write the full required PR description "
+                "to $NIGHTOWL_STATE_DIR/pr_body.md and its title to "
+                "$NIGHTOWL_STATE_DIR/pr_title.txt. Include required preview links "
+                "and issue references. Report completed when the validated files "
+                "and publication handoff are ready; the runner separately verifies "
+                "publication before recording task success. Read-only Git/GitHub "
+                "inspection remains available. Real validation or prerequisite "
+                "failures must still report blocked or failed."
+            )
         cmd = [
             "codex",
             "exec",
@@ -511,18 +662,113 @@ def _run_agent_task(
             "workspace-write",
             "-c",
             f'model_reasoning_effort="{task.codex_reasoning_effort}"',
+            "-c",
+            "sandbox_workspace_write.network_access=true",
         ]
+        cmd.extend(_codex_writable_args(env))
+        if task.git_write:
+            git_dir = _run(
+                ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                cwd=project_dir,
+                logger=logger,
+            )
+            if git_dir.returncode != 0:
+                raise RuntimeError("Could not locate Git metadata for Codex task")
+            path = Path(git_dir.stdout.strip())
+            if not path.is_dir():
+                raise RuntimeError("Codex Git metadata directory does not exist")
+            cmd.extend(["--add-dir", str(path)])
         if task.codex_model is not None:
             cmd.extend(["--model", task.codex_model])
-        cmd.extend(["--", task.prompt])
-        return _run(
-            cmd,
-            cwd=project_dir,
-            logger=logger,
-            timeout=1800,
-            env=env,
-            stdin=subprocess.DEVNULL,
+        prompt += (
+            "\n\nReturn the required structured outcome. Use completed only when "
+            "the requested work and required checks are complete; a verified finding "
+            "that no work is needed also counts as completed. Use blocked when a "
+            "required prerequisite, permission, credential, network service, or tool "
+            "is unavailable. Use failed when attempted work fails. Never report "
+            "completed merely because you explained a blocker. Summarize the result "
+            "briefly without credentials, tokens, or secret URLs."
         )
+        schema = {
+            "type": "object",
+            "properties": {
+                "outcome": {
+                    "type": "string",
+                    "enum": ["completed", "blocked", "failed"],
+                },
+                "summary": {"type": "string"},
+            },
+            "required": ["outcome", "summary"],
+            "additionalProperties": False,
+        }
+        with tempfile.TemporaryDirectory(prefix="nightowl-outcome-") as directory:
+            schema_path = Path(directory) / "schema.json"
+            output_path = Path(directory) / "outcome.json"
+            schema_path.write_text(json.dumps(schema))
+            cmd.extend(
+                [
+                    "--output-schema",
+                    str(schema_path),
+                    "--output-last-message",
+                    str(output_path),
+                    "--",
+                    prompt,
+                ]
+            )
+            _save_codex_outcome(
+                env,
+                {
+                    "outcome": "failed",
+                    "summary": "No validated outcome received for the current invocation.",
+                },
+            )
+            result = _run(
+                cmd,
+                cwd=project_dir,
+                logger=logger,
+                timeout=1800,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                log_output=False,
+            )
+            if result.returncode != 0:
+                return result
+            payload: dict = {}
+            try:
+                payload = json.loads(output_path.read_text())
+                if (
+                    not isinstance(payload, dict)
+                    or set(payload) != {"outcome", "summary"}
+                    or payload["outcome"] not in ("completed", "blocked", "failed")
+                    or not isinstance(payload["summary"], str)
+                    or not payload["summary"].strip()
+                ):
+                    raise ValueError("invalid outcome")
+                outcome = payload["outcome"]
+            except (OSError, ValueError, TypeError):
+                outcome = "invalid-output"
+            # Do not put free-form agent output in operational logs: it may contain
+            # credentials despite the prompt. Fixed summaries make failures safe.
+            summaries = {
+                "completed": "Codex confirmed the requested work is complete.",
+                "blocked": "Codex reported an unavailable prerequisite.",
+                "failed": "Codex reported that the requested work failed.",
+                "invalid-output": "Codex did not return a valid structured outcome.",
+            }
+            summary = summaries[outcome]
+            _save_codex_outcome(
+                env,
+                {"outcome": "failed", "summary": summary}
+                if outcome == "invalid-output"
+                else payload,
+            )
+            logger.info("Codex outcome %s: %s", outcome, summary)
+            return subprocess.CompletedProcess(
+                result.args,
+                0 if outcome == "completed" else 1,
+                stdout=summary,
+                stderr="" if outcome == "completed" else summary,
+            )
 
     raise ValueError(f"Unsupported task agent: {task.agent!r}")
 
@@ -636,6 +882,9 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
         # Per-task state dir that survives worktree teardown.
         state_dir = _task_state_dir(task.id)
         state_dir.mkdir(parents=True, exist_ok=True)
+        if task.agent == "codex" and task.output == "pr":
+            for filename in ("pr_title.txt", "pr_body.md"):
+                (state_dir / filename).unlink(missing_ok=True)
         agent_env = {**os.environ, "NIGHTOWL_STATE_DIR": str(state_dir)}
 
         # Run the configured agent (30 min timeout per task).
@@ -650,6 +899,13 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
             claude_envelope_stdout = agent_result.stdout
 
         if agent_result.returncode != 0:
+            safe_failures = {
+                "Codex reported an unavailable prerequisite.",
+                "Codex reported that the requested work failed.",
+                "Codex did not return a valid structured outcome.",
+            }
+            if task.agent == "codex" and agent_result.stderr in safe_failures:
+                raise RuntimeError(agent_result.stderr)
             raise RuntimeError(
                 f"{task.agent} exited with code {agent_result.returncode}"
             )
@@ -665,9 +921,9 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
         )
         commits_ahead = int(rev_list.stdout.strip() or "0")
 
-        # Find uncommitted working-tree changes (unstaged tracked files)
+        # Include staged and unstaged tracked changes.
         wt_diff = _run(
-            ["git", "diff", "--name-only"],
+            ["git", "diff", "HEAD", "--name-only"],
             cwd=worktree_path,
             logger=logger,
         )
@@ -690,13 +946,22 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
         pr_url = None
 
         if has_changes and task.output in ("pr", "commit"):
+            # Require the Codex handoff before publishing a branch. A missing
+            # description must not leave an orphaned remote branch.
+            codex_pr_metadata = (
+                _generate_pr_metadata(task, worktree_path, logger)
+                if task.agent == "codex" and task.output == "pr"
+                else None
+            )
             # Only add/commit if there are uncommitted changes
             if uncommitted_files:
-                _run(
+                staged = _run(
                     ["git", "add", "--"] + uncommitted_files,
                     cwd=worktree_path,
                     logger=logger,
                 )
+                if staged.returncode != 0:
+                    raise RuntimeError(f"git add failed: {staged.stderr}")
                 result = _run(
                     ["git", "commit", "-m", task.name],
                     cwd=worktree_path,
@@ -708,13 +973,7 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
                 logger.info("Claude already committed all changes, skipping add/commit")
 
             # Push
-            result = _run(
-                ["git", "push", "-u", "origin", branch],
-                cwd=worktree_path,
-                logger=logger,
-            )
-            if result.returncode != 0:
-                raise RuntimeError(f"git push failed: {result.stderr}")
+            _push_branch(worktree_path, branch, logger)
 
             # Create PR if output is pr
             if task.output == "pr":
@@ -722,49 +981,43 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
                 # prompts call `gh pr create` themselves), adopt it instead of
                 # firing a duplicate `gh pr create` that would fail with
                 # "a pull request for branch ... already exists".
-                existing = _run(
-                    [
-                        "gh",
-                        "pr",
-                        "list",
-                        "--head",
-                        branch,
-                        "--state",
-                        "open",
-                        "--json",
-                        "url",
-                        "--jq",
-                        ".[0].url // empty",
-                    ],
-                    cwd=worktree_path,
-                    logger=logger,
-                )
-                if existing.returncode == 0 and existing.stdout.strip():
-                    pr_url = existing.stdout.strip()
+                existing = _open_pr(worktree_path, branch, logger)
+                if existing is not None:
+                    pr_url = (
+                        _check_pr(existing, task.pr_labels)
+                        if task.agent == "codex"
+                        else str(existing["url"])
+                    )
                     logger.info(f"PR already opened by task: {pr_url}")
                 else:
-                    pr_title, pr_body = _generate_pr_metadata(
-                        task,
-                        worktree_path,
-                        logger,
+                    pr_title, pr_body = codex_pr_metadata or _generate_pr_metadata(
+                        task, worktree_path, logger
                     )
-                    result = _run(
-                        [
+                    with tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".md"
+                    ) as body_file:
+                        body_file.write(pr_body)
+                        body_file.flush()
+                        command = [
                             "gh",
                             "pr",
                             "create",
                             "--title",
                             pr_title,
-                            "--body",
-                            pr_body,
-                        ],
-                        cwd=worktree_path,
-                        logger=logger,
-                    )
+                            "--body-file",
+                            body_file.name,
+                        ]
+                        if task.agent == "codex":
+                            command.append("--draft")
+                        for label in task.pr_labels:
+                            command.extend(["--label", label])
+                        result = _run(command, cwd=worktree_path, logger=logger)
                     if result.returncode != 0:
                         raise RuntimeError(f"gh pr create failed: {result.stderr}")
                     pr_url = result.stdout.strip()
                     logger.info(f"PR created: {pr_url}")
+        elif task.require_pr and has_changes:
+            pr_url = _verify_direct_pr(task, worktree_path, branch, logger)
         elif not has_changes:
             logger.info(f"No changes made by {task.agent}.")
 

@@ -1,8 +1,10 @@
 """Per-task Codex model selection preserves existing CLI and Claude defaults."""
 
+import json
 import logging
 import subprocess
 from datetime import timedelta
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -61,9 +63,20 @@ def test_codex_subprocess_argv(tmp_path, model):
     task = make_task(agent="codex", codex_model=model, codex_reasoning_effort="medium")
     env = {"NIGHTOWL_STATE_DIR": str(tmp_path)}
     proc = subprocess.CompletedProcess([], 0, stdout="", stderr="")
-    with patch("nightowl.runner.subprocess.run", return_value=proc) as run:
-        assert _run_agent_task(task, tmp_path, logging.getLogger("test"), env) is proc
-    expected = [
+
+    def invoke(cmd, **kwargs):
+        Path(cmd[cmd.index("--output-last-message") + 1]).write_text(
+            json.dumps({"outcome": "completed", "summary": "No work needed."})
+        )
+        return proc
+
+    with patch("nightowl.runner.subprocess.run", side_effect=invoke) as run:
+        assert (
+            _run_agent_task(task, tmp_path, logging.getLogger("test"), env).returncode
+            == 0
+        )
+    cmd = run.call_args.args[0]
+    assert cmd[:7] == [
         "codex",
         "exec",
         "--ephemeral",
@@ -71,21 +84,23 @@ def test_codex_subprocess_argv(tmp_path, model):
         "hooks",
         "-s",
         "workspace-write",
-        "-c",
-        'model_reasoning_effort="medium"',
     ]
-    if model is not None:
-        expected.extend(["--model", model])
-    expected.extend(["--", "Do the task"])
-    run.assert_called_once_with(
-        expected,
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-        timeout=1800,
-        env=env,
-        stdin=subprocess.DEVNULL,
-    )
+    assert 'model_reasoning_effort="medium"' in cmd
+    assert "sandbox_workspace_write.network_access=true" in cmd
+    assert "--output-schema" in cmd
+    assert cmd[-1].startswith("Do the task")
+    if model is None:
+        assert "--model" not in cmd
+    else:
+        assert cmd[cmd.index("--model") + 1] == model
+    assert run.call_args.kwargs == {
+        "cwd": tmp_path,
+        "capture_output": True,
+        "text": True,
+        "timeout": 1800,
+        "env": env,
+        "stdin": subprocess.DEVNULL,
+    }
 
 
 def test_codex_model_does_not_override_claude(tmp_path):

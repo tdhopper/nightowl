@@ -155,12 +155,15 @@ nightowl uninstall
 | `model` | no | `claude-opus-4-6` | Claude model, including PR metadata and fact-check fixes |
 | `codex_model` | no | CLI configuration | Codex model for the main task (for example, `gpt-5.6-sol`); set in task Markdown frontmatter |
 | `codex_reasoning_effort` | no | `low` | Codex reasoning effort: `minimal`, `low`, `medium`, or `high` |
+| `git_write` | no | `false` | For a Codex `output: none` task, allow Git metadata writes so it can update existing branches or run hosted checks |
+| `pr_labels` | no | `[]` | Labels added to runner-created PRs and required on directly published PRs when `require_pr` is true |
+| `require_pr` | no | `false` | For a Codex `git_write` task, fail unless changed files are committed, pushed, and linked to an open draft PR with `pr_labels` |
 
 ### Output modes
 
 - **`pr`**: Commit, push, and open a pull request via `gh pr create`
 - **`commit`**: Commit and push to the branch (no PR)
-- **`none`**: No git operations after Claude runs
+- **`none`**: No git operations after the agent runs; use `git_write: true` only when the Codex task must manage its own Git publication
 
 ### State file
 
