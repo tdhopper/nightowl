@@ -161,6 +161,7 @@ def deadline(
 
 def task_health(config: dict, now: datetime, cache: dict) -> dict[str, str]:
     schedule = load_config(Path(config["project_path"]) / "nightowl")
+    states: dict = {}
     for attempt in range(3):
         try:
             states = get_all_task_states(config["project_path"])
@@ -267,9 +268,12 @@ def ping(url: str, healthy: bool, status: str = "") -> bool:
 
 def report(config: dict, dry_run: bool = False) -> int:
     now = datetime.now().astimezone()
-    cache_path = Path(
-        config.get("health_cache_path", config["receipt_path"] + ".health.json")
+    cache_name = config.get(
+        "health_cache_path", config["receipt_path"] + ".health.json"
     )
+    if not isinstance(cache_name, str):
+        raise ValueError("invalid health cache path")
+    cache_path = Path(cache_name)
     cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
     statuses = {"scheduler": scheduler_health(config, now)}
     try:

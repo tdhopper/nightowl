@@ -85,16 +85,24 @@ def _generate_pr_metadata(
     title_override = state_dir / "pr_title.txt"
     body_override = state_dir / "pr_body.md"
 
+    if task.agent == "codex" and (
+        not title_override.is_file() or not body_override.is_file()
+    ):
+        raise RuntimeError("Codex task did not provide PR title and body")
+
     if body_override.is_file():
         logger.info(f"Using task-provided PR body: {body_override}")
-        body = body_override.read_text().rstrip() + "\n\n---\n*Automated by nightowl*"
+        body = body_override.read_text().strip()
         if title_override.is_file():
-            title = title_override.read_text().strip().splitlines()[0]
+            title_text = title_override.read_text().strip()
+            title = title_text.splitlines()[0] if title_text else ""
             title_override.unlink()
         else:
             title = task.name
+        if not title or not body:
+            raise RuntimeError("Task provided an empty PR title or body")
         body_override.unlink()
-        return title, body
+        return title, body + "\n\n---\n*Automated by nightowl*"
 
     diff_result = _run(
         ["git", "diff", "origin/main", "--stat"],
@@ -532,6 +540,69 @@ def _push_branch(project_dir: Path, branch: str, logger: Logger) -> None:
     raise RuntimeError(f"git push failed: {pushed.stderr}")
 
 
+def _open_pr(project_dir: Path, branch: str, logger: Logger) -> dict | None:
+    result = _run(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--head",
+            branch,
+            "--state",
+            "open",
+            "--json",
+            "url,isDraft,labels",
+        ],
+        cwd=project_dir,
+        logger=logger,
+        timeout=60,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"gh pr list failed: {result.stderr}")
+    try:
+        prs = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError as error:
+        raise RuntimeError("gh pr list returned invalid JSON") from error
+    if not isinstance(prs, list) or len(prs) > 1:
+        raise RuntimeError("gh pr list returned an unexpected PR set")
+    return prs[0] if prs else None
+
+
+def _check_pr(pr: dict, labels: list[str]) -> str:
+    if not isinstance(pr, dict) or not pr.get("url") or pr.get("isDraft") is not True:
+        raise RuntimeError("Task PR is missing or is not a draft")
+    actual_labels = {label.get("name") for label in pr.get("labels", [])}
+    if not set(labels).issubset(actual_labels):
+        raise RuntimeError("Task PR is missing required labels")
+    return str(pr["url"])
+
+
+def _verify_direct_pr(
+    task: Task, project_dir: Path, branch: str, logger: Logger
+) -> str:
+    """Require a clean, pushed task branch and an open draft PR."""
+    status = _run(["git", "status", "--porcelain"], cwd=project_dir, logger=logger)
+    current = _run(["git", "branch", "--show-current"], cwd=project_dir, logger=logger)
+    head = _run(["git", "rev-parse", "HEAD"], cwd=project_dir, logger=logger)
+    remote = _run(
+        ["git", "ls-remote", "--heads", "origin", branch],
+        cwd=project_dir,
+        logger=logger,
+        timeout=60,
+    )
+    if any(result.returncode != 0 for result in (status, current, head, remote)):
+        raise RuntimeError("Could not verify task branch publication")
+    if status.stdout.strip() or current.stdout.strip() != branch:
+        raise RuntimeError("Task left uncommitted changes or switched branches")
+    remote_sha = remote.stdout.split()[0] if remote.stdout.strip() else None
+    if not remote_sha or remote_sha != head.stdout.strip():
+        raise RuntimeError("Task branch was not pushed at the reviewed commit")
+    pr = _open_pr(project_dir, branch, logger)
+    if pr is None:
+        raise RuntimeError("Task did not open a PR")
+    return _check_pr(pr, task.pr_labels)
+
+
 def _run_agent_task(
     task: Task,
     project_dir: Path,
@@ -604,6 +675,18 @@ def _run_agent_task(
             "sandbox_workspace_write.network_access=true",
         ]
         cmd.extend(_codex_writable_args(env))
+        if task.git_write:
+            git_dir = _run(
+                ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                cwd=project_dir,
+                logger=logger,
+            )
+            if git_dir.returncode != 0:
+                raise RuntimeError("Could not locate Git metadata for Codex task")
+            path = Path(git_dir.stdout.strip())
+            if not path.is_dir():
+                raise RuntimeError("Codex Git metadata directory does not exist")
+            cmd.extend(["--add-dir", str(path)])
         if task.codex_model is not None:
             cmd.extend(["--model", task.codex_model])
         prompt += (
@@ -659,6 +742,7 @@ def _run_agent_task(
             )
             if result.returncode != 0:
                 return result
+            payload: dict = {}
             try:
                 payload = json.loads(output_path.read_text())
                 if (
@@ -807,6 +891,9 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
         # Per-task state dir that survives worktree teardown.
         state_dir = _task_state_dir(task.id)
         state_dir.mkdir(parents=True, exist_ok=True)
+        if task.agent == "codex" and task.output == "pr":
+            for filename in ("pr_title.txt", "pr_body.md"):
+                (state_dir / filename).unlink(missing_ok=True)
         agent_env = {**os.environ, "NIGHTOWL_STATE_DIR": str(state_dir)}
 
         # Run the configured agent (30 min timeout per task).
@@ -868,13 +955,22 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
         pr_url = None
 
         if has_changes and task.output in ("pr", "commit"):
+            # Require the Codex handoff before publishing a branch. A missing
+            # description must not leave an orphaned remote branch.
+            codex_pr_metadata = (
+                _generate_pr_metadata(task, worktree_path, logger)
+                if task.agent == "codex" and task.output == "pr"
+                else None
+            )
             # Only add/commit if there are uncommitted changes
             if uncommitted_files:
-                _run(
+                staged = _run(
                     ["git", "add", "--"] + uncommitted_files,
                     cwd=worktree_path,
                     logger=logger,
                 )
+                if staged.returncode != 0:
+                    raise RuntimeError(f"git add failed: {staged.stderr}")
                 result = _run(
                     ["git", "commit", "-m", task.name],
                     cwd=worktree_path,
@@ -894,49 +990,43 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
                 # prompts call `gh pr create` themselves), adopt it instead of
                 # firing a duplicate `gh pr create` that would fail with
                 # "a pull request for branch ... already exists".
-                existing = _run(
-                    [
-                        "gh",
-                        "pr",
-                        "list",
-                        "--head",
-                        branch,
-                        "--state",
-                        "open",
-                        "--json",
-                        "url",
-                        "--jq",
-                        ".[0].url // empty",
-                    ],
-                    cwd=worktree_path,
-                    logger=logger,
-                )
-                if existing.returncode == 0 and existing.stdout.strip():
-                    pr_url = existing.stdout.strip()
+                existing = _open_pr(worktree_path, branch, logger)
+                if existing is not None:
+                    pr_url = (
+                        _check_pr(existing, task.pr_labels)
+                        if task.agent == "codex"
+                        else str(existing["url"])
+                    )
                     logger.info(f"PR already opened by task: {pr_url}")
                 else:
-                    pr_title, pr_body = _generate_pr_metadata(
-                        task,
-                        worktree_path,
-                        logger,
+                    pr_title, pr_body = codex_pr_metadata or _generate_pr_metadata(
+                        task, worktree_path, logger
                     )
-                    result = _run(
-                        [
+                    with tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".md"
+                    ) as body_file:
+                        body_file.write(pr_body)
+                        body_file.flush()
+                        command = [
                             "gh",
                             "pr",
                             "create",
                             "--title",
                             pr_title,
-                            "--body",
-                            pr_body,
-                        ],
-                        cwd=worktree_path,
-                        logger=logger,
-                    )
+                            "--body-file",
+                            body_file.name,
+                        ]
+                        if task.agent == "codex":
+                            command.append("--draft")
+                        for label in task.pr_labels:
+                            command.extend(["--label", label])
+                        result = _run(command, cwd=worktree_path, logger=logger)
                     if result.returncode != 0:
                         raise RuntimeError(f"gh pr create failed: {result.stderr}")
                     pr_url = result.stdout.strip()
                     logger.info(f"PR created: {pr_url}")
+        elif task.require_pr and has_changes:
+            pr_url = _verify_direct_pr(task, worktree_path, branch, logger)
         elif not has_changes:
             logger.info(f"No changes made by {task.agent}.")
 
