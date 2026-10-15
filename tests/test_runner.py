@@ -101,23 +101,18 @@ class TestRunCodexFactCheck:
             assert passed is False
             assert "ISSUES FOUND" in feedback
 
-    def test_codex_failure_treated_as_pass(self, tmp_path, logger):
+    def test_codex_failure_raises(self, tmp_path, logger):
         with patch("nightowl.runner._run") as mock_run:
-            proc = MagicMock()
-            proc.returncode = 1
-            mock_run.return_value = proc
+            mock_run.return_value.returncode = 1
+            with pytest.raises(RuntimeError, match="process failed"):
+                _run_codex_fact_check("some diff", tmp_path, logger)
 
-            passed, feedback = _run_codex_fact_check("some diff", tmp_path, logger)
-            assert passed is True
-            assert feedback == ""
-
-    def test_codex_timeout_treated_as_pass(self, tmp_path, logger):
+    def test_codex_timeout_raises(self, tmp_path, logger):
         with patch(
             "nightowl.runner._run", side_effect=subprocess.TimeoutExpired("codex", 300)
         ):
-            passed, feedback = _run_codex_fact_check("some diff", tmp_path, logger)
-            assert passed is True
-            assert feedback == ""
+            with pytest.raises(RuntimeError, match="could not complete"):
+                _run_codex_fact_check("some diff", tmp_path, logger)
 
 
 class TestRunFactCheckLoop:
@@ -170,11 +165,11 @@ class TestRunFactCheckLoop:
             proc.returncode = 0
             mock_run.return_value = proc
 
-            # Should not raise
-            _run_fact_check_loop(task, tmp_path, logger)
+            with pytest.raises(RuntimeError, match="did not pass"):
+                _run_fact_check_loop(task, tmp_path, logger)
 
-            # Claude re-invoked 3 times (once per failed iteration)
-            assert mock_run.call_count == 3
+            # Two repairs are each followed by another verification.
+            assert mock_run.call_count == 2
 
     def test_empty_diff_skips(self, tmp_path, logger):
         task = _make_task(fact_check=True)
