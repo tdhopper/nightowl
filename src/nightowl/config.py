@@ -365,7 +365,7 @@ def load_config(path: Path | None = None) -> Config:
       configured model), and
       `git_write` (default false; grants Codex Git metadata writes for
       `output: none` tasks), `pr_labels` (labels for new PRs),
-      `require_pr` (verify a direct-publishing task opened a draft PR), and
+      `require_pr` (verify a direct-publishing task opened a PR in the selected mode), and
       `skip_if_open` (default none — a list of artifact-existence checks
       that, if any matches, skips the run; see ``SkipIfOpenCheck``). The
       markdown body is the task prompt. The filename stem becomes the task id.

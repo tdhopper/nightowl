@@ -157,13 +157,31 @@ nightowl uninstall
 | `codex_reasoning_effort` | no | `low` | Codex reasoning effort: `minimal`, `low`, `medium`, or `high` |
 | `git_write` | no | `false` | For a Codex `output: none` task, allow Git metadata writes so it can update existing branches or run hosted checks |
 | `pr_labels` | no | `[]` | Labels added to runner-created PRs and required on directly published PRs when `require_pr` is true |
-| `require_pr` | no | `false` | For a Codex `git_write` task, fail unless changed files are committed, pushed, and linked to an open draft PR with `pr_labels` |
+| `require_pr` | no | `false` | For a Codex `git_write` task, fail unless changed files are committed, pushed, and linked to an open PR in the selected mode with `pr_labels` |
 
 ### Output modes
 
 - **`pr`**: Commit, push, and open a pull request via `gh pr create`
 - **`commit`**: Commit and push to the branch (no PR)
 - **`none`**: No git operations after the agent runs; use `git_write: true` only when the Codex task must manage its own Git publication
+
+### PR draft mode
+
+Codex tasks create draft PRs by default. Claude tasks keep their existing
+non-draft default. Set `NIGHTOWL_PR_DRAFT=false` in a project-specific launcher
+to open new PRs ready for review, or `NIGHTOWL_PR_DRAFT=true` to require drafts.
+Only the exact values `true` and `false` are accepted.
+
+```bash
+NIGHTOWL_PR_DRAFT=false nightowl run
+```
+
+The setting applies to runner-created PRs and `require_pr` verification. Tasks
+that publish their own PRs receive the same mode explicitly, overriding generic
+or task-specific draft instructions. Existing PRs are never converted, and
+validation and required labels still apply. Keep this environment variable in
+the intended project's launcher rather than a global shell profile so other
+projects retain their defaults.
 
 ### State file
 

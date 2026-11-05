@@ -568,9 +568,20 @@ def _open_pr(project_dir: Path, branch: str, logger: Logger) -> dict | None:
     return prs[0] if prs else None
 
 
-def _check_pr(pr: dict, labels: list[str]) -> str:
-    if not isinstance(pr, dict) or not pr.get("url") or pr.get("isDraft") is not True:
-        raise RuntimeError("Task PR is missing or is not a draft")
+def _pr_draft_mode(task: Task, env: dict[str, str]) -> bool:
+    """Keep agent defaults unless this invocation explicitly selects a PR mode."""
+    value = env.get("NIGHTOWL_PR_DRAFT")
+    if value is None:
+        return task.agent == "codex"
+    if value not in ("true", "false"):
+        raise ValueError("NIGHTOWL_PR_DRAFT must be 'true' or 'false'")
+    return value == "true"
+
+
+def _check_pr(pr: dict, labels: list[str], draft: bool = True) -> str:
+    if not isinstance(pr, dict) or not pr.get("url") or pr.get("isDraft") is not draft:
+        expected = "a draft" if draft else "ready for review"
+        raise RuntimeError(f"Task PR is missing or is not {expected}")
     actual_labels = {label.get("name") for label in pr.get("labels", [])}
     if not set(labels).issubset(actual_labels):
         raise RuntimeError("Task PR is missing required labels")
@@ -578,9 +589,9 @@ def _check_pr(pr: dict, labels: list[str]) -> str:
 
 
 def _verify_direct_pr(
-    task: Task, project_dir: Path, branch: str, logger: Logger
+    task: Task, project_dir: Path, branch: str, logger: Logger, draft: bool = True
 ) -> str:
-    """Require a clean, pushed task branch and an open draft PR."""
+    """Require a clean, pushed task branch and an open PR in the selected mode."""
     status = _run(["git", "status", "--porcelain"], cwd=project_dir, logger=logger)
     current = _run(["git", "branch", "--show-current"], cwd=project_dir, logger=logger)
     head = _run(["git", "rev-parse", "HEAD"], cwd=project_dir, logger=logger)
@@ -600,7 +611,7 @@ def _verify_direct_pr(
     pr = _open_pr(project_dir, branch, logger)
     if pr is None:
         raise RuntimeError("Task did not open a PR")
-    return _check_pr(pr, task.pr_labels)
+    return _check_pr(pr, task.pr_labels, draft=draft)
 
 
 def _run_agent_task(
@@ -611,6 +622,18 @@ def _run_agent_task(
 ) -> subprocess.CompletedProcess:
     """Run the configured task agent in a non-interactive launchd-safe mode."""
     prompt = task.prompt
+    if "NIGHTOWL_PR_DRAFT" in env and (task.output == "pr" or task.require_pr):
+        draft = _pr_draft_mode(task, env)
+        mode = "as drafts with --draft" if draft else "ready for review without --draft"
+        prompt += (
+            "\n\nNightowl PR mode for this invocation (overrides generic and task "
+            "instructions about draft PR status only): Create any new PR already "
+            f"authorized by this task {mode}. Keep all required validation and "
+            "review labels. Do not change the draft status of existing PRs. This "
+            "does not authorize additional publication, merging, or sending "
+            "newsletter drafts. For runner-owned publication, the runner applies "
+            "this mode after the validated handoff."
+        )
     if env.get("NIGHTOWL_MONITORING_BACKEND") == "healthchecks":
         prompt += (
             "\n\nOperational monitoring policy (overrides task instructions to email "
@@ -854,6 +877,7 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
     outcome: dict = {"result": "failure", "error": "task did not complete"}
 
     try:
+        pr_draft = _pr_draft_mode(task, dict(os.environ))
         # Fetch origin
         result = _run(["git", "fetch", "origin"], cwd=project_dir, logger=logger)
         if result.returncode != 0:
@@ -993,8 +1017,8 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
                 existing = _open_pr(worktree_path, branch, logger)
                 if existing is not None:
                     pr_url = (
-                        _check_pr(existing, task.pr_labels)
-                        if task.agent == "codex"
+                        _check_pr(existing, task.pr_labels, draft=pr_draft)
+                        if task.agent == "codex" or "NIGHTOWL_PR_DRAFT" in os.environ
                         else str(existing["url"])
                     )
                     logger.info(f"PR already opened by task: {pr_url}")
@@ -1016,7 +1040,7 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
                             "--body-file",
                             body_file.name,
                         ]
-                        if task.agent == "codex":
+                        if pr_draft:
                             command.append("--draft")
                         for label in task.pr_labels:
                             command.extend(["--label", label])
@@ -1026,7 +1050,9 @@ def run_task(task: Task, project_dir: Path, logger: Logger) -> dict:
                     pr_url = result.stdout.strip()
                     logger.info(f"PR created: {pr_url}")
         elif task.require_pr and has_changes:
-            pr_url = _verify_direct_pr(task, worktree_path, branch, logger)
+            pr_url = _verify_direct_pr(
+                task, worktree_path, branch, logger, draft=pr_draft
+            )
         elif not has_changes:
             logger.info(f"No changes made by {task.agent}.")
 

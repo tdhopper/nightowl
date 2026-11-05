@@ -131,7 +131,16 @@ def test_codex_pr_needs_metadata_instead_of_claude_fallback(tmp_path):
     run.assert_not_called()
 
 
-def test_runner_publishes_codex_changes_as_labeled_draft(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("draft_override", "expected_draft"),
+    [(None, True), ("false", False), ("true", True)],
+)
+def test_runner_publishes_codex_changes_in_selected_mode(
+    tmp_path, monkeypatch, draft_override, expected_draft
+):
+    monkeypatch.delenv("NIGHTOWL_PR_DRAFT", raising=False)
+    if draft_override is not None:
+        monkeypatch.setenv("NIGHTOWL_PR_DRAFT", draft_override)
     origin = tmp_path / "origin.git"
     origin.mkdir()
     git(origin, "init", "--bare")
@@ -207,7 +216,7 @@ def test_runner_publishes_codex_changes_as_labeled_draft(tmp_path, monkeypatch):
 
     assert outcome["result"] == "success"
     assert outcome["pr_url"] == "https://example.invalid/pr/1"
-    assert "--draft" in created["command"]
+    assert ("--draft" in created["command"]) is expected_draft
     assert created["command"][-2:] == ["--label", "needs-codex-review"]
     assert "Verified commands." in created["body"]
     assert "stale body" not in created["body"]
